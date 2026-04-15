@@ -35,14 +35,19 @@ calendar tests
 ├─ create allows empty location
 ├─ create rejects missing summary
 ├─ create rejects missing startAt
-└─ create rejects missing endAt
+├─ create rejects missing endAt
+├─ create with sync disabled does not call provider
+├─ create with sync enabled calls provider after Firestore create
+├─ create stores provider success result
+└─ create stores sync failure without dropping task
 
 repository tests
 ├─ creates calendar_tasks document
 ├─ stores rawText
 ├─ stores taskType
 ├─ stores startAt/endAt separately
-└─ stores internal request/response snapshots
+├─ stores internal request/response snapshots
+└─ updates Google Calendar sync result fields
 ```
 
 ## First Test Cases
@@ -115,6 +120,35 @@ Then repository Create is not called
 And error code is INTERNAL_EXTRACTION_INCOMPLETE
 ```
 
+```text
+TestCalendarCreateSyncsToGoogleCalendarWhenEnabled
+Given calendar sync is enabled
+And repository Create succeeds
+And fake provider returns googleCalendarEventId and htmlLink
+When calendar Create runs
+Then provider CreateEvent is called with shared calendar id
+And repository UpdateSyncResult stores calendar_synced
+And result includes calendar sync metadata
+```
+
+```text
+TestCalendarCreateKeepsTaskWhenGoogleCalendarSyncFails
+Given calendar sync is enabled
+And repository Create succeeds
+And fake provider returns an error
+When calendar Create runs
+Then repository UpdateSyncResult stores calendar_sync_failed
+And created task is still returned with failed sync status
+```
+
+```text
+TestCalendarCreateDoesNotCallProviderWhenSyncDisabled
+Given calendar sync is disabled
+When calendar Create runs
+Then repository Create is called
+And provider CreateEvent is not called
+```
+
 ## Fake Dependencies
 
 UseCase tests should use fakes instead of real network:
@@ -126,7 +160,8 @@ task usecase test
 
 calendar usecase test
 ├─ real calendar service
-└─ fake calendar repository
+├─ fake calendar repository
+└─ fake calendar provider
 
 gatekeeper handler test
 └─ fake task usecase
@@ -144,3 +179,7 @@ Repository tests may use Firestore emulator once repository code exists.
 
 這些屬於 integration / future scope。第一版先把 LineBot Backend 自己的 orchestration 和 persistence 邊界鎖住。
 
+Google Calendar testing rule:
+- Use fake provider for usecase tests.
+- Use real Google Calendar API only in manual integration testing.
+- Do not put real OAuth token or credentials into automated tests.

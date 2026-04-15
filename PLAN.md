@@ -6,13 +6,14 @@
 
 LineBot Backend 是獨立專案，目標是把日常對話中的自然語句轉成可執行任務。
 
-第一版先不接正式 LINE webhook，也不接 Google Calendar。第一版只做 REST API，方便用 Postman 驗證完整鏈路：
+第一版先不接正式 LINE webhook。第一版用 REST API 方便 Postman 驗證完整鏈路，calendar task 先寫 Firestore，並可透過方案 C 同步到 Google shared calendar：
 
 ```text
 Postman
 └─ LineBot Backend REST API
    └─ Internal AI Copilot gRPC LineTaskConsult
       └─ Firestore create
+         └─ optional Google Calendar events.insert
 ```
 
 長期目標不是只做行事曆，而是成為「LINE / REST 入口 + Internal AI 任務解析 + 多功能任務執行」的 backend。
@@ -35,7 +36,7 @@ LineBot Backend long-term
 │
 └─ persistence / integrations
    ├─ Firestore
-   └─ future Google Calendar
+   └─ Google Calendar shared calendar sync
 ```
 
 ### High-Level Rules
@@ -43,8 +44,9 @@ LineBot Backend long-term
 - LineBot Backend 不處理 LinkChat。
 - LineBot Backend 不重做 Internal 的 AI pipeline。
 - Internal AI Copilot 負責自然語句解析、Gemma 溝通與 structured extraction。
-- LineBot Backend 負責入口、任務分派、Firestore persistence、未來外部服務同步。
+- LineBot Backend 負責入口、任務分派、Firestore persistence、外部服務同步。
 - 第一版只支援 `calendar create`。
+- Google Calendar 串接採方案 C：OAuth user token 寫入共用 calendar。
 - 未來功能增加時，新增同層 module，再由 `task` 分派。
 - LineBot Backend 會用本地 task registry 管理可用 task types；第一版只有 `calendar`。
 - Internal gRPC request 會帶 `supportedTaskTypes=["calendar"]`，Internal response 會回 `taskType` 供 LineBot Backend 分派。
@@ -58,16 +60,36 @@ In scope
 ├─ 驗證 summary / startAt / endAt
 ├─ location optional
 ├─ operation=create 寫入 Firestore
-└─ 回傳 taskId + extraction result
+├─ Google Calendar API create sync（可由 env 關閉）
+└─ 回傳 taskId + extraction result + sync result
 
 Out of scope
 ├─ LINE webhook 正式串接
-├─ Google Calendar API 串接
 ├─ update / delete / query
 ├─ 固定前綴指令
 ├─ LinkChat
 └─ 本地 AI 判斷
 ```
+
+### Google Calendar Shared Calendar
+
+Google Calendar 不直接寫個人裝置本地行事曆，而是寫入一個你與伴侶共同訂閱 / 共用的 Google Calendar。
+
+```text
+方案 C
+├─ 建立 shared Google Calendar
+├─ 你與伴侶都加入 / 訂閱該 calendar
+├─ LineBot Backend 使用 OAuth user consent 取得 refresh token
+├─ server 寫入 configured shared calendar id
+└─ Pixel 上的 Google Calendar app 透過 Google 帳號同步顯示事件
+```
+
+決策：
+- Firestore 仍是任務 source of truth。
+- Google Calendar 是外部同步目標。
+- Google Calendar sync 失敗不能讓已解析出的任務資料消失。
+- 第一版 sync 只做 `create -> events.insert`。
+- `update/delete/query` 等 operation 後續再接。
 
 ### Future Behavior Direction
 
@@ -160,7 +182,7 @@ calendar
 ├─ create validation
 ├─ future update / delete / query
 ├─ Firestore calendar_tasks persistence
-└─ future Google Calendar sync
+└─ Google Calendar sync
 
 internalclient
 ├─ Internal AI Copilot gRPC client
@@ -173,6 +195,7 @@ infra
 ├─ shared errors
 ├─ HTTP response envelope
 ├─ Firestore store
+├─ Google Calendar client
 └─ shared persistence / runtime helpers
 ```
 
@@ -212,16 +235,52 @@ task.UseCase
    ▼
 calendar.UseCase
 ├─ calendar.Service.ValidateCreate
-│  ├─ summary required
-│  ├─ startAt required
-│  ├─ endAt required
+├─ calendar.Repository.Create
+│  └─ Firestore calendar_tasks/{taskId}
+└─ optional infra.GoogleCalendarProvider.CreateEvent
+   └─ Google Calendar shared calendar
+```
+
+### Google Calendar Sync Flow
+
+```text
+calendar.UseCase.Create
+├─ ValidateCreate
+├─ Repository.Create
+│  ├─ sync enabled -> calendarSyncStatus = calendar_sync_pending
+│  └─ sync disabled -> calendarSyncStatus = not_enabled
+│
+├─ infra.GoogleCalendarProvider.CreateEvent
+│  ├─ calendarId = LINEBOT_GOOGLE_CALENDAR_ID
+│  ├─ summary
+│  ├─ startAt
+│  ├─ endAt
+│  ├─ timeZone
 │  └─ location optional
 │
-└─ calendar.Repository.Create
-   │
-   ▼
-Firestore
-└─ calendar_tasks/{taskId}
+├─ success
+│  └─ Repository.UpdateSyncResult
+│     ├─ calendarSyncStatus = calendar_synced
+│     ├─ googleCalendarEventId
+│     ├─ googleCalendarHtmlLink
+│     └─ calendarSyncedAt
+│
+└─ failure
+   └─ Repository.UpdateSyncResult
+      ├─ calendarSyncStatus = calendar_sync_failed
+      └─ calendarSyncError
+```
+
+Package addition:
+
+```text
+internal/calendar
+└─ usecase.go
+   └─ orchestrates repository + infra.GoogleCalendarProvider
+
+internal/infra
+└─ google_calendar_client.go
+   └─ Google Calendar API implementation
 ```
 
 ### Future Factory / Router Flow
@@ -326,7 +385,10 @@ Response:
     "startAt": "2026-04-16 12:00:00",
     "endAt": "2026-04-16 12:30:00",
     "location": "",
-    "missingFields": ["location"]
+    "missingFields": ["location"],
+    "calendarSyncStatus": "not_enabled",
+    "googleCalendarEventId": "",
+    "googleCalendarHtmlLink": ""
   }
 }
 ```
@@ -416,6 +478,12 @@ calendar_tasks/{taskId}
 ├─ location
 ├─ missingFields
 ├─ status
+├─ calendarSyncStatus
+├─ googleCalendarId
+├─ googleCalendarEventId
+├─ googleCalendarHtmlLink
+├─ calendarSyncError
+├─ calendarSyncedAt
 ├─ internalAppId
 ├─ internalBuilderId
 ├─ internalRequest
@@ -432,6 +500,22 @@ calendar_tasks/{taskId}
 - `startAt` / `endAt` 拆欄存。
 - `internalResponse` 可保存完整 extraction 結果方便 debug。
 
+### Google Calendar Config
+
+```text
+LINEBOT_GOOGLE_CALENDAR_ENABLED=true
+LINEBOT_GOOGLE_CALENDAR_ID=<shared-calendar-id>
+LINEBOT_GOOGLE_CALENDAR_TIME_ZONE=Asia/Taipei
+LINEBOT_GOOGLE_OAUTH_CREDENTIALS_FILE=<client-secret-json-path>
+LINEBOT_GOOGLE_OAUTH_TOKEN_FILE=<stored-token-json-path>
+```
+
+規則：
+- credentials / token 不可 commit。
+- token 必須代表可寫入 shared calendar 的 Google user。
+- service account 不是第一選擇；個人 / 家庭場景以 OAuth user consent 較合理。
+- shared calendar id 必須可由該 OAuth user 寫入。
+
 ### Error Shape
 
 Missing text:
@@ -439,8 +523,10 @@ Missing text:
 ```json
 {
   "success": false,
-  "code": "TEXT_REQUIRED",
-  "message": "text is required"
+  "error": {
+    "code": "TEXT_REQUIRED",
+    "message": "text is required"
+  }
 }
 ```
 
@@ -449,9 +535,11 @@ Internal extraction incomplete:
 ```json
 {
   "success": false,
-  "code": "INTERNAL_EXTRACTION_INCOMPLETE",
-  "message": "Internal extraction did not return required fields.",
-  "missingFields": ["startAt", "endAt"]
+  "error": {
+    "code": "INTERNAL_EXTRACTION_INCOMPLETE",
+    "message": "Internal extraction did not return required fields",
+    "missingFields": ["startAt", "endAt"]
+  }
 }
 ```
 
@@ -460,8 +548,10 @@ Unsupported operation:
 ```json
 {
   "success": false,
-  "code": "OPERATION_UNSUPPORTED",
-  "message": "Only create operation is supported in the first version."
+  "error": {
+    "code": "OPERATION_UNSUPPORTED",
+    "message": "Operation update is not supported in the first version"
+  }
 }
 ```
 
@@ -502,7 +592,15 @@ M6: Tests
 ├─ unsupported operation
 └─ successful Firestore create
 
-M7: Future LINE webhook
+M7: Google Calendar shared calendar sync
+├─ infra.GoogleCalendarProvider interface
+├─ sync status Firestore fields
+├─ OAuth token file loading
+├─ Google Calendar events.insert
+├─ sync success / failure result update
+└─ manual Postman -> Firestore -> Google Calendar verification
+
+M8: Future LINE webhook
 ├─ verify LINE signature
 ├─ tag bot trigger
 └─ same task usecase
@@ -514,5 +612,6 @@ M7: Future LINE webhook
 - REST route 是否確定使用 `POST /api/tasks`。
 - Firestore project id / emulator port 是否沿用現有 ProjectAI emulator 設定。
 - Internal gRPC server address env name。
-- LineBot app id 是否使用新 app id，或暫時沿用既有 app 設定。
-- Internal seed 是否已允許 LineBot app 使用 `builderId=4`。
+- Google shared calendar id 要使用哪一個 calendar。
+- OAuth token 檔案要放在哪個非 git 路徑。
+- Calendar sync 失敗時 API response 要維持 200 還是回 partial failure status。

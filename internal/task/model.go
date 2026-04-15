@@ -24,11 +24,16 @@ type CreateFromTextCommand struct {
 
 // TaskResult holds the result of task creation.
 type TaskResult struct {
-	TaskID        string
-	Operation     string
-	Summary       string
-	StartAt       string
-	EndAt         string
-	Location      string
-	MissingFields []string
+	TaskID                 string
+	Operation              string
+	Summary                string
+	StartAt                string
+	EndAt                  string
+	Location               string
+	MissingFields          []string
+	CalendarSyncStatus     string
+	GoogleCalendarID       string
+	GoogleCalendarEventID  string
+	GoogleCalendarHTMLLink string
+	CalendarSyncError      string
 }

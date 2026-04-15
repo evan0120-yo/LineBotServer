@@ -15,7 +15,8 @@ system boundary
 ├─ LineBot Backend
 │  ├─ request boundary
 │  ├─ task dispatch
-│  └─ Firestore persistence
+│  ├─ Firestore persistence
+│  └─ optional Google Calendar sync
 └─ Internal AI Copilot
    └─ natural language -> structured task extraction
 ```
@@ -52,6 +53,67 @@ And `missingFields=["location"]`
 When LineBot Backend 處理此 extraction result  
 Then LineBot Backend 應照常寫入 Firestore  
 And 不應因 `location` 缺失回錯
+
+## Scenario Group: Google Calendar Sync
+
+第一個 Google Calendar 串接版本採方案 C：使用一個共用 Google Calendar，LineBot Backend 透過已完成 OAuth 授權的 Google 帳號寫入該共用行事曆。Firestore 仍是 LineBot Backend 的 task source of truth。
+
+```text
+Google Calendar sync boundary
+├─ Firestore calendar_tasks 永遠先保存 task
+├─ Google Calendar 是外部同步目標
+├─ OAuth token 代表可寫入 shared calendar 的 Google user
+└─ shared calendar 由使用者與伴侶共同訂閱 / 共用
+```
+
+### Scenario: create task and sync to shared Google Calendar
+
+Given Internal 回傳 `taskType="calendar"`  
+And `operation="create"`  
+And `summary`、`startAt`、`endAt` 皆存在  
+And Google Calendar sync is enabled  
+And OAuth token 可寫入 configured shared calendar  
+When LineBot Backend 建立 calendar task  
+Then LineBot Backend 應先寫入 `calendar_tasks/{taskId}`  
+And 應呼叫 Google Calendar API 建立 event  
+And Firestore 應保存 `googleCalendarEventId`、`googleCalendarHtmlLink`、`calendarSyncStatus="calendar_synced"`  
+And response 應回傳 calendar sync result
+
+```text
+expected flow
+calendar.UseCase.Create
+├─ repository.Create(calendarSyncStatus=calendar_sync_pending)
+├─ calendarProvider.CreateEvent(sharedCalendarId)
+└─ repository.UpdateSyncResult(calendarSyncStatus=calendar_synced)
+```
+
+### Scenario: Google Calendar sync fails after Firestore create
+
+Given Internal extraction result is valid  
+And Firestore create succeeds  
+And Google Calendar API returns an error  
+When LineBot Backend handles the task  
+Then Firestore 應保留已建立的 task  
+And task `calendarSyncStatus` 應更新為 `calendar_sync_failed`  
+And task 應保存 `calendarSyncError`  
+And response 應清楚告知 sync failed  
+And 不應遺失 Internal extraction result
+
+### Scenario: Google Calendar sync disabled
+
+Given Google Calendar sync is disabled by config  
+When LineBot Backend 建立 calendar task  
+Then LineBot Backend 只應寫入 Firestore  
+And 不應呼叫 Google Calendar API  
+And task `calendarSyncStatus` 應保持 `not_enabled`
+
+### Scenario: missing required event time prevents sync
+
+Given Internal 回傳 `startAt=""` or `endAt=""`  
+When LineBot Backend 處理 extraction result  
+Then LineBot Backend 不應寫入 Firestore  
+And 不應呼叫 Google Calendar API  
+And response 應回 `INTERNAL_EXTRACTION_INCOMPLETE`
 
 ### Scenario: startAt is missing
 
@@ -132,4 +194,3 @@ And message 有 tag bot
 When future linebot handler 移除 mention 文字  
 Then 應呼叫與 REST 相同的 task usecase  
 And 不應複製 calendar persistence 流程
-

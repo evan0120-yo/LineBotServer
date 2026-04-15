@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -37,9 +38,33 @@ func New(cfg infra.Config) (*App, error) {
 	}
 
 	// 3. Create calendar module
+	var googleCalendarProvider infra.GoogleCalendarProvider
+	if cfg.GoogleCalendarEnabled {
+		googleCalendarProvider, err = infra.NewGoogleCalendarClient(context.Background(), infra.GoogleCalendarClientOptions{
+			CredentialsFile: cfg.GoogleOAuthCredentialsFile,
+			TokenFile:       cfg.GoogleOAuthTokenFile,
+			CalendarID:      cfg.GoogleCalendarID,
+			TimeZone:        cfg.GoogleCalendarTimeZone,
+		})
+		if err != nil {
+			internalClient.Close()
+			store.Close()
+			return nil, fmt.Errorf("failed to create Google Calendar client: %w", err)
+		}
+	}
+
 	calendarService := calendar.NewService()
 	calendarRepository := calendar.NewRepository(store)
-	calendarUseCase := calendar.NewUseCase(calendarService, calendarRepository)
+	calendarUseCase := calendar.NewUseCase(
+		calendarService,
+		calendarRepository,
+		googleCalendarProvider,
+		calendar.SyncConfig{
+			Enabled:    cfg.GoogleCalendarEnabled,
+			CalendarID: cfg.GoogleCalendarID,
+			TimeZone:   cfg.GoogleCalendarTimeZone,
+		},
+	)
 
 	// 4. Create task module
 	taskService := task.NewService()

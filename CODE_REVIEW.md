@@ -13,7 +13,7 @@
 - 未來 LINE 使用者：tag bot 後送出自然語句，系統自動建立任務。
 - 開發者：維護 task type registry，新增功能時加新的 feature module。
 
-它目前比較像「任務分派中心」，不是完整的任務管理系統。第一版只做 create，不做 update/delete/query。第一版只支援 calendar，未來會有 note、reminder 等。第一版只寫 Firestore，不串 Google Calendar。
+它目前比較像「任務分派中心」，不是完整的任務管理系統。第一版只做 create，不做 update/delete/query。第一版只支援 calendar，未來會有 note、reminder 等。任務會先寫 Firestore；若啟用 Google Calendar 設定，會再同步建立 shared calendar event。
 
 從 code 看得出的刻意選擇有幾個：
 - REST 和未來 LINE webhook 共用同一條 task usecase，不分兩套業務流程。
@@ -26,7 +26,7 @@
 它目前不是：
 - 不是 AI 引擎，AI extraction 完全交給 Internal AI Copilot。
 - 不是完整的任務管理系統，沒有 update/delete/query/list。
-- 不是 Google Calendar 的 proxy，第一版只寫 Firestore。
+- 不是完整 Google Calendar proxy，目前只支援 create -> events.insert，且 Firestore 仍是 source of truth。
 - 不是多用戶系統，沒有 user authentication。
 
 ---
@@ -166,7 +166,12 @@ calendar.UseCase.Create
       │  calendar_tasks/{uuid}
       │  └─ Write document
       │
-      └─ Return CalendarTask
+      ├─ sync disabled -> Return CalendarTask(calendarSyncStatus=not_enabled)
+      │
+      └─ sync enabled
+         ├─ infra.GoogleCalendarClient.CreateEvent
+         ├─ success -> UpdateSyncResult(calendar_synced + event metadata)
+         └─ failure -> UpdateSyncResult(calendar_sync_failed + error)
          │
          ▼
 task.UseCase (繼續)
@@ -315,6 +320,12 @@ calendar_tasks/{taskId}
 ├─ location            string      地點（可空）
 ├─ missingFields       []string    Internal extraction 缺失欄位
 ├─ status              string      "created"
+├─ calendarSyncStatus  string      "not_enabled" / "calendar_sync_pending" / "calendar_synced" / "calendar_sync_failed"
+├─ googleCalendarId    string      shared calendar id
+├─ googleCalendarEventId string    Google Calendar event id
+├─ googleCalendarHtmlLink string   event link
+├─ calendarSyncError   string      sync failure reason
+├─ calendarSyncedAt    timestamp   sync timestamp
 ├─ internalAppId       string      "linebot-app"
 ├─ internalBuilderId   int         4
 ├─ internalRequest     string      LineTaskConsultRequest JSON
@@ -329,7 +340,8 @@ calendar_tasks/{taskId}
 - rawText 必須保存，方便追蹤 Internal extraction 問題。
 - startAt/endAt 不做格式轉換，直接保存 Internal 回傳值。
 - location 可空，missingFields 可包含 "location"。
-- status 第一版固定 "created"，未來 Google Calendar sync 使用 "synced"/"sync_failed"。
+- status 第一版固定 "created"。
+- Google Calendar sync 使用 `calendarSyncStatus` 表達 `not_enabled` / `calendar_sync_pending` / `calendar_synced` / `calendar_sync_failed`。
 - internalRequest/internalResponse 序列化成 JSON 保存，方便 debug。
 
 > 注意：目前沒有索引設定，未來若需要 query API，需要針對 source / taskType / createdAt 建立索引。
@@ -417,26 +429,40 @@ Firestore 新增
 ### F-4. Google Calendar 串接
 
 ```text
-新增 calendar/google_client.go
-├─ OAuth 2.0 flow
-├─ CreateEvent()
-├─ UpdateEvent()
-└─ DeleteEvent()
+方案 C: shared Google Calendar
+├─ 建立一個你與伴侶共用的 Google Calendar
+├─ 透過 OAuth user consent 取得可寫入該 calendar 的 refresh token
+├─ LineBot Backend 寫入 configured shared calendar id
+└─ Pixel / Google Calendar app 透過 Google 帳號同步事件
 
-修改 calendar/repository.go
-└─ Create() 後呼叫 googleClient
-   ├─ 成功 -> status = "synced"
-   ├─ 失敗 -> status = "sync_failed"
-   └─ 保存 googleEventId
+calendar.UseCase 透過 infra.GoogleCalendarProvider interface 依賴外部 calendar 寫入能力。
 
-修改 CalendarTaskDoc
-└─ 新增 googleEventId string
+已新增 infra/google_calendar_client.go
+├─ OAuth token load
+├─ Calendar service client
+└─ events.insert
+
+calendar.UseCase.Create
+├─ 先寫 Firestore
+├─ sync enabled -> 呼叫 CalendarProvider.CreateEvent
+├─ 成功 -> calendarSyncStatus = calendar_synced
+└─ 失敗 -> calendarSyncStatus = calendar_sync_failed，保留 Firestore task
+
+CalendarTaskDoc
+├─ calendarSyncStatus
+├─ googleCalendarId
+├─ googleCalendarEventId
+├─ googleCalendarHtmlLink
+├─ calendarSyncError
+└─ calendarSyncedAt
 ```
 
 規則：
-- 第一版不串，專注驗證 extraction + persistence 流程。
-- 未來串接時，Firestore 作為任務對照表。
-- 授權方式需確認（service account 或 user OAuth）。
+- 目前只做 create -> Google Calendar events.insert。
+- Firestore 仍是 task source of truth。
+- Google Calendar sync 失敗不應刪除已建立 task。
+- credentials / token 不可 commit。
+- service account 不是目前主方案；個人 / 家庭場景以 OAuth user + shared calendar 較合理。
 
 ---
 
@@ -687,7 +713,7 @@ infra/http.go 提供：
 原因：
 - 避免時區轉換錯誤。
 - Internal 已處理相對時間語意（「明天」、「下週」）。
-- 第一版不串 Google Calendar，不需要嚴格的 ISO 8601。
+- Google Calendar client 會把 Internal 回傳的 `yyyy-MM-dd HH:mm:ss` 依 configured timezone 轉成 RFC3339 後送出。
 - 未來串接時再做統一格式化。
 
 ### F-6. 第一版不支援 Update/Delete/Query
@@ -758,7 +784,7 @@ app integration test
 限制
 ├─ 只支援 calendar create
 ├─ 不支援 update/delete/query
-├─ 不串 Google Calendar
+├─ Google Calendar sync 只支援 create（方案 C）
 ├─ 不接 LINE webhook
 ├─ 沒有 user authentication
 ├─ 沒有 CORS 設定
@@ -771,7 +797,7 @@ app integration test
 改進
 ├─ 新增 task types（note / reminder）
 ├─ 支援 update/delete/query
-├─ 串接 Google Calendar
+├─ 擴充 Google Calendar update/delete/query
 ├─ LINE webhook 整合
 ├─ 新增 Firestore 索引
 └─ 單元測試覆蓋
@@ -791,6 +817,9 @@ app integration test
 ├─ Operation validation (create only)
 ├─ Calendar validation (summary/startAt/endAt required)
 ├─ Firestore calendar_tasks persistence
+├─ Optional Google Calendar shared calendar events.insert sync
+├─ Google OAuth token generator cmd/googleauth
+├─ Calendar usecase sync unit tests
 ├─ Error handling (6 error codes)
 └─ Complete documentation
    ├─ PLAN.md

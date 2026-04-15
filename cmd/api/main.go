@@ -36,6 +36,10 @@ func main() {
 	log.Printf("Internal gRPC address: %s", cfg.InternalGRPCAddr)
 	log.Printf("Internal App ID: %s", cfg.InternalAppID)
 	log.Printf("Internal Builder ID: %d", cfg.InternalBuilderID)
+	log.Printf("Google Calendar enabled: %t", cfg.GoogleCalendarEnabled)
+	if cfg.GoogleCalendarEnabled {
+		log.Printf("Google Calendar ID: %s", cfg.GoogleCalendarID)
+	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server failed: %v", err)

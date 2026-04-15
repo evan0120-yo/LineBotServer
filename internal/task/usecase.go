@@ -103,13 +103,18 @@ func (u *UseCase) createCalendarTask(
 
 	// Map to TaskResult
 	result := TaskResult{
-		TaskID:        calendarTask.TaskID,
-		Operation:     extractionResult.Operation,
-		Summary:       calendarTask.Summary,
-		StartAt:       calendarTask.StartAt,
-		EndAt:         calendarTask.EndAt,
-		Location:      calendarTask.Location,
-		MissingFields: calendarTask.MissingFields,
+		TaskID:                 calendarTask.TaskID,
+		Operation:              extractionResult.Operation,
+		Summary:                calendarTask.Summary,
+		StartAt:                calendarTask.StartAt,
+		EndAt:                  calendarTask.EndAt,
+		Location:               calendarTask.Location,
+		MissingFields:          calendarTask.MissingFields,
+		CalendarSyncStatus:     calendarTask.CalendarSyncStatus,
+		GoogleCalendarID:       calendarTask.GoogleCalendarID,
+		GoogleCalendarEventID:  calendarTask.GoogleCalendarEventID,
+		GoogleCalendarHTMLLink: calendarTask.GoogleCalendarHTMLLink,
+		CalendarSyncError:      calendarTask.CalendarSyncError,
 	}
 
 	return result, nil

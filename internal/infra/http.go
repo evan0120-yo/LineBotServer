@@ -8,8 +8,9 @@ import (
 
 // APIError represents an error in API response.
 type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code          string   `json:"code"`
+	Message       string   `json:"message"`
+	MissingFields []string `json:"missingFields,omitempty"`
 }
 
 // APIResponse is the standard JSON envelope for all API responses.
@@ -42,8 +43,9 @@ func WriteError(w http.ResponseWriter, err error) {
 	if bizErr := AsBusinessError(err); bizErr != nil {
 		status = bizErr.HTTPStatus
 		apiError = &APIError{
-			Code:    bizErr.Code,
-			Message: bizErr.Message,
+			Code:          bizErr.Code,
+			Message:       bizErr.Message,
+			MissingFields: bizErr.MissingFields,
 		}
 	} else {
 		status = http.StatusInternalServerError
@@ -75,14 +77,9 @@ func DecodeJSONStrict(w http.ResponseWriter, r *http.Request, target any, maxByt
 		return NewError("INVALID_JSON", "Invalid JSON request: "+err.Error(), http.StatusBadRequest)
 	}
 
-	// Ensure no additional JSON data after the target
-	if decoder.More() {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
 		return NewError("INVALID_JSON", "Request body contains multiple JSON objects", http.StatusBadRequest)
-	}
-
-	// Ensure body is fully read
-	if _, err := io.Copy(io.Discard, r.Body); err != nil {
-		return NewError("INVALID_JSON", "Error reading request body: "+err.Error(), http.StatusBadRequest)
 	}
 
 	return nil

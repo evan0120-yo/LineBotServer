@@ -7,9 +7,10 @@ import (
 
 // BusinessError represents a domain-level error with error code and HTTP status.
 type BusinessError struct {
-	Code       string
-	Message    string
-	HTTPStatus int
+	Code          string
+	Message       string
+	HTTPStatus    int
+	MissingFields []string
 }
 
 func (e *BusinessError) Error() string {
@@ -25,6 +26,16 @@ func NewError(code, message string, status int) error {
 	}
 }
 
+// NewErrorWithMissingFields creates a BusinessError carrying missing field details.
+func NewErrorWithMissingFields(code, message string, status int, missingFields []string) error {
+	return &BusinessError{
+		Code:          code,
+		Message:       message,
+		HTTPStatus:    status,
+		MissingFields: append([]string(nil), missingFields...),
+	}
+}
+
 // AsBusinessError attempts to cast an error to BusinessError.
 // Returns nil if the error is not a BusinessError.
 func AsBusinessError(err error) *BusinessError {
@@ -37,12 +48,12 @@ func AsBusinessError(err error) *BusinessError {
 
 // Error codes
 const (
-	ErrCodeTextRequired                = "TEXT_REQUIRED"
+	ErrCodeTextRequired                 = "TEXT_REQUIRED"
 	ErrCodeInternalExtractionIncomplete = "INTERNAL_EXTRACTION_INCOMPLETE"
-	ErrCodeTaskTypeUnsupported         = "TASK_TYPE_UNSUPPORTED"
-	ErrCodeOperationUnsupported        = "OPERATION_UNSUPPORTED"
-	ErrCodeInternalGRPCError           = "INTERNAL_GRPC_ERROR"
-	ErrCodeFirestoreWriteError         = "FIRESTORE_WRITE_ERROR"
+	ErrCodeTaskTypeUnsupported          = "TASK_TYPE_UNSUPPORTED"
+	ErrCodeOperationUnsupported         = "OPERATION_UNSUPPORTED"
+	ErrCodeInternalGRPCError            = "INTERNAL_GRPC_ERROR"
+	ErrCodeFirestoreWriteError          = "FIRESTORE_WRITE_ERROR"
 )
 
 // NewTextRequiredError creates TEXT_REQUIRED error.
@@ -53,7 +64,7 @@ func NewTextRequiredError() error {
 // NewInternalExtractionIncompleteError creates INTERNAL_EXTRACTION_INCOMPLETE error.
 func NewInternalExtractionIncompleteError(missingFields []string) error {
 	message := "Internal extraction did not return required fields"
-	return NewError(ErrCodeInternalExtractionIncomplete, message, http.StatusBadRequest)
+	return NewErrorWithMissingFields(ErrCodeInternalExtractionIncomplete, message, http.StatusBadRequest, missingFields)
 }
 
 // NewTaskTypeUnsupportedError creates TASK_TYPE_UNSUPPORTED error.

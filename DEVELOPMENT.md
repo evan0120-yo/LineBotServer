@@ -13,7 +13,7 @@ LineBot Backend
 ├─ 驗證 Internal 回傳的任務抽取結果
 ├─ 依 taskType 分派到功能 module
 ├─ 將任務資料寫入 Firestore
-└─ 未來再擴充 LINE webhook 與 Google Calendar
+└─ 未來再擴充 LINE webhook；Google Calendar create sync 已接入
 ```
 
 Internal AI Copilot 是 AI 溝通與自然語句解析的唯一來源。LineBot Backend 不自行建立另一套 AI pipeline。
@@ -26,7 +26,8 @@ In scope
 ├─ 未來 LINE webhook handler
 ├─ Internal gRPC client
 ├─ Firestore task persistence
-└─ Calendar task usecase orchestration
+├─ Calendar task usecase orchestration
+└─ optional Google Calendar shared calendar sync
 
 Out of scope
 ├─ LinkChat
@@ -39,7 +40,7 @@ Out of scope
 - 不碰 LinkChat 專案。
 - 不在本專案重做 Internal 的 builder / aiclient / prompt 邏輯。
 - 第一版只做 RESTful 測試入口，不接正式 LINE webhook。
-- Google Calendar 後續再做，第一版只寫 Firestore。
+- Google Calendar 串接採方案 C：OAuth user token 寫入使用者與伴侶共用的 Google Calendar。
 
 ## Architecture
 
@@ -249,6 +250,12 @@ calendar_tasks/{taskId}
 ├─ location
 ├─ missingFields
 ├─ status
+├─ calendarSyncStatus
+├─ googleCalendarId
+├─ googleCalendarEventId
+├─ googleCalendarHtmlLink
+├─ calendarSyncError
+├─ calendarSyncedAt
 ├─ internalAppId
 ├─ internalBuilderId
 ├─ internalRequest
@@ -262,6 +269,65 @@ calendar_tasks/{taskId}
 - `rawText` 必須保存，方便追蹤 Internal extraction 問題。
 - `internalResponse` 可保存第一版完整回應，方便 debug。
 - 後續 update / delete / query 需要時，再補查詢欄位與索引設計。
+
+## Google Calendar Shared Calendar Rule
+
+Google Calendar 串接採方案 C。
+
+```text
+方案 C
+├─ 使用一個 shared Google Calendar
+├─ 使用者與伴侶都訂閱 / 共用該 calendar
+├─ LineBot Backend 透過 OAuth user consent 取得 refresh token
+├─ server 寫入 configured shared calendar id
+└─ Pixel / Google Calendar app 由 Google 帳號同步事件
+```
+
+架構規則：
+- Firestore 是 task source of truth。
+- Google Calendar 是外部同步目標。
+- calendar usecase 依賴 `CalendarProvider` interface。
+- Google SDK / OAuth token loading 放在 infra。
+- Google Calendar sync 失敗時，不應刪除已建立的 Firestore task。
+
+```text
+calendar.UseCase.Create
+├─ ValidateCreate
+├─ Repository.Create
+├─ sync enabled?
+│  ├─ no  -> return Firestore-only result
+│  └─ yes -> CalendarProvider.CreateEvent
+│
+├─ provider success
+│  └─ Repository.UpdateSyncResult(calendar_synced)
+└─ provider failure
+   └─ Repository.UpdateSyncResult(calendar_sync_failed)
+```
+
+建議 sync status：
+
+```text
+calendarSyncStatus
+├─ not_enabled
+├─ calendar_sync_pending
+├─ calendar_synced
+└─ calendar_sync_failed
+```
+
+建議 env：
+
+```text
+LINEBOT_GOOGLE_CALENDAR_ENABLED=true
+LINEBOT_GOOGLE_CALENDAR_ID=<shared-calendar-id>
+LINEBOT_GOOGLE_CALENDAR_TIME_ZONE=Asia/Taipei
+LINEBOT_GOOGLE_OAUTH_CREDENTIALS_FILE=<client-secret-json-path>
+LINEBOT_GOOGLE_OAUTH_TOKEN_FILE=<stored-token-json-path>
+```
+
+安全規則：
+- OAuth credentials / token 不可 commit。
+- token 應放在本機或部署環境的 secret path。
+- shared calendar id 必須可被該 OAuth user 寫入。
 
 ## Future LINE Webhook Rule
 
@@ -282,15 +348,21 @@ LINE message event
 - 是否為任務內容交給 Internal + Gemma 判斷。
 - LINE webhook handler 不複製 REST handler 的業務流程。
 
-## Future Google Calendar Rule
+## Future Operation Rule
 
-Google Calendar 不列入第一版。
+Google Calendar create sync 已完成；後續再擴充 update / delete / query。
 
-後續串接時：
-- Calendar integration 應放在 UseCase 編排下。
-- Firestore 必須保存 Google Calendar event id。
-- create / update / delete 應以 Firestore 作為任務對照表。
-- 授權方式需另行確認，不能假設 server 可直接寫個人 Pixel 上的日曆。
+```text
+create -> Google Calendar events.insert
+update -> Google Calendar events.patch
+delete -> Google Calendar events.delete
+query  -> Firestore / Google Calendar list strategy 待定
+```
+
+規則：
+- update/delete 需要保存 `googleCalendarEventId` 後才能穩定對應。
+- query 是否查 Firestore 或 Google Calendar 需另外設計。
+- 第一版 Google Calendar sync 僅處理 create。
 
 ## Testing Strategy
 
@@ -326,4 +398,5 @@ Google Calendar 不列入第一版。
 4. REST 與 future LINE 是否共用同一個 UseCase。
 5. startAt / endAt 缺失是否被視為錯誤。
 6. location 是否維持 optional。
-7. 是否需要同步 PLAN.md。
+7. Google Calendar sync 是否保持 Firestore source of truth。
+8. 是否需要同步 PLAN.md。

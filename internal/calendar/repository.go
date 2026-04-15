@@ -25,25 +25,30 @@ func NewRepository(store *infra.Store) *Repository {
 func (r *Repository) Create(ctx context.Context, command CreateCommand) (CalendarTask, error) {
 	taskID := uuid.New().String()
 	now := time.Now()
+	syncStatus := command.CalendarSyncStatus
+	if syncStatus == "" {
+		syncStatus = CalendarSyncStatusNotEnabled
+	}
 
 	doc := infra.CalendarTaskDoc{
-		TaskID:            taskID,
-		Source:            command.Source,
-		RawText:           command.RawText,
-		TaskType:          command.TaskType,
-		Operation:         command.Operation,
-		Summary:           command.Summary,
-		StartAt:           command.StartAt,
-		EndAt:             command.EndAt,
-		Location:          command.Location,
-		MissingFields:     command.MissingFields,
-		Status:            "created",
-		InternalAppID:     command.InternalAppID,
-		InternalBuilderID: command.InternalBuilderID,
-		InternalRequest:   command.InternalRequest,
-		InternalResponse:  command.InternalResponse,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		TaskID:             taskID,
+		Source:             command.Source,
+		RawText:            command.RawText,
+		TaskType:           command.TaskType,
+		Operation:          command.Operation,
+		Summary:            command.Summary,
+		StartAt:            command.StartAt,
+		EndAt:              command.EndAt,
+		Location:           command.Location,
+		MissingFields:      command.MissingFields,
+		Status:             TaskStatusCreated,
+		CalendarSyncStatus: syncStatus,
+		InternalAppID:      command.InternalAppID,
+		InternalBuilderID:  command.InternalBuilderID,
+		InternalRequest:    command.InternalRequest,
+		InternalResponse:   command.InternalResponse,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	if err := r.store.CreateCalendarTask(ctx, doc); err != nil {
@@ -51,14 +56,27 @@ func (r *Repository) Create(ctx context.Context, command CreateCommand) (Calenda
 	}
 
 	task := CalendarTask{
-		TaskID:        taskID,
-		Summary:       command.Summary,
-		StartAt:       command.StartAt,
-		EndAt:         command.EndAt,
-		Location:      command.Location,
-		MissingFields: command.MissingFields,
-		CreatedAt:     now,
+		TaskID:             taskID,
+		Summary:            command.Summary,
+		StartAt:            command.StartAt,
+		EndAt:              command.EndAt,
+		Location:           command.Location,
+		MissingFields:      command.MissingFields,
+		CalendarSyncStatus: syncStatus,
+		CreatedAt:          now,
 	}
 
 	return task, nil
+}
+
+// UpdateSyncResult updates Google Calendar sync metadata for a calendar task.
+func (r *Repository) UpdateSyncResult(ctx context.Context, taskID string, result SyncResult) error {
+	return r.store.UpdateCalendarTaskSyncResult(ctx, taskID, infra.CalendarTaskSyncResult{
+		CalendarSyncStatus:     result.CalendarSyncStatus,
+		GoogleCalendarID:       result.GoogleCalendarID,
+		GoogleCalendarEventID:  result.GoogleCalendarEventID,
+		GoogleCalendarHTMLLink: result.GoogleCalendarHTMLLink,
+		CalendarSyncError:      result.CalendarSyncError,
+		CalendarSyncedAt:       result.CalendarSyncedAt,
+	})
 }

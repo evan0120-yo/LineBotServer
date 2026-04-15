@@ -16,10 +16,11 @@ LineBot Backend
 │  └─ dispatches to feature module
 │
 ├─ feature modules
-│  └─ calendar first version
+│  └─ calendar first version + optional Google Calendar sync
 │
 └─ persistence
-   └─ Firestore
+   ├─ Firestore
+   └─ Google Calendar shared calendar integration
 ```
 
 ## Package Architecture
@@ -40,13 +41,13 @@ Backend/
    │  └─ Internal extraction + task dispatch
    │
    ├─ calendar
-   │  └─ calendar task usecase / service / repository
+   │  └─ calendar task usecase / service / repository / provider boundary
    │
    ├─ internalclient
    │  └─ Internal AI Copilot gRPC client
    │
    └─ infra
-      └─ config / errors / response / Firestore store
+      └─ config / errors / response / Firestore store / Google Calendar client
 ```
 
 ## Module Responsibilities
@@ -80,7 +81,8 @@ calendar
 ├─ require summary / startAt / endAt
 ├─ treat location as optional
 ├─ create calendar task record
-└─ own calendar_tasks Firestore schema
+├─ own calendar_tasks Firestore schema
+└─ optionally syncs created tasks to shared Google Calendar
 
 internalclient
 ├─ build LineTaskConsult gRPC request
@@ -93,6 +95,7 @@ infra
 ├─ business errors
 ├─ HTTP JSON envelope
 ├─ Firestore client / store
+├─ Google Calendar client
 └─ runtime helpers
 ```
 
@@ -133,9 +136,85 @@ task.UseCase
 │
 └─ calendar.UseCase.Create
    ├─ calendar.Service.ValidateCreate
-   └─ calendar.Repository.Create
-      └─ Firestore calendar_tasks
+   ├─ calendar.Repository.Create
+   │  └─ Firestore calendar_tasks
+   └─ optional infra.GoogleCalendarProvider.CreateEvent
+      └─ Google Calendar shared calendar
 ```
+
+## Google Calendar Sync Design
+
+Google Calendar 串接採方案 C：建立一個使用者與伴侶共用的 Google Calendar，LineBot Backend 透過 OAuth 授權的 Google user 寫入該 shared calendar。
+
+```text
+ownership
+├─ Firestore
+│  └─ LineBot Backend task source of truth
+│
+├─ Google Calendar shared calendar
+│  └─ external visible calendar for Pixel / Google Calendar app
+│
+└─ OAuth token
+   └─ authorizes server to write the configured shared calendar
+```
+
+### Calendar Provider Boundary
+
+```text
+internal/calendar
+├─ usecase.go
+│  └─ Create()
+│     ├─ validate extraction
+│     ├─ repository.Create(calendarSyncStatus=calendar_sync_pending or not_enabled)
+│     ├─ infra.GoogleCalendarProvider.CreateEvent()
+│     └─ repository.UpdateCalendarSyncResult()
+│
+└─ repository.go
+   ├─ Create()
+   └─ UpdateSyncResult()
+
+internal/infra
+└─ google_calendar_client.go
+   └─ Google Calendar API implementation
+```
+
+### Sync Flow
+
+```text
+calendar.UseCase.Create
+├─ ValidateCreate(summary/startAt/endAt)
+├─ Repository.Create
+│  ├─ calendarSyncStatus = calendar_sync_pending when sync enabled
+│  └─ calendarSyncStatus = not_enabled when sync disabled
+│
+├─ sync disabled?
+│  └─ return Firestore-only task result
+│
+├─ infra.GoogleCalendarProvider.CreateEvent
+│  ├─ calendarId = configured shared calendar id
+│  ├─ summary = task summary
+│  ├─ start = startAt + configured/default timezone
+│  ├─ end = endAt + configured/default timezone
+│  └─ location optional
+│
+├─ provider success
+│  └─ Repository.UpdateSyncResult
+│     ├─ calendarSyncStatus = calendar_synced
+│     ├─ googleCalendarId
+│     ├─ googleCalendarEventId
+│     ├─ googleCalendarHtmlLink
+│     └─ calendarSyncedAt
+│
+└─ provider failure
+   └─ Repository.UpdateSyncResult
+      ├─ calendarSyncStatus = calendar_sync_failed
+      └─ calendarSyncError
+```
+
+Rule:
+- Firestore create success is preserved even when Google Calendar sync fails.
+- Google Calendar sync result must be visible in Firestore and API response.
+- The provider implementation is replaceable; usecase depends on the interface, not Google SDK types.
 
 ## Task Type Contract
 
@@ -193,6 +272,12 @@ calendar_tasks/{taskId}
 ├─ location
 ├─ missingFields
 ├─ status
+├─ calendarSyncStatus
+├─ googleCalendarId
+├─ googleCalendarEventId
+├─ googleCalendarHtmlLink
+├─ calendarSyncError
+├─ calendarSyncedAt
 ├─ internalAppId
 ├─ internalBuilderId
 ├─ internalRequest
@@ -207,6 +292,12 @@ Rules:
 - `taskType=calendar` for first version.
 - `location` may be empty.
 - `startAt` and `endAt` are stored as separate fields.
+- Google Calendar fields are empty until sync is enabled and succeeds.
+- `calendarSyncStatus` values:
+  - `not_enabled`
+  - `calendar_sync_pending`
+  - `calendar_synced`
+  - `calendar_sync_failed`
 
 ## Future Extension Model
 
@@ -225,4 +316,3 @@ internal/
 ```
 
 `task` remains the dispatch layer. Feature modules own their own usecase / service / repository.
-

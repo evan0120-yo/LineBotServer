@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/option"
@@ -58,6 +59,28 @@ func (s *Store) CreateCalendarTask(ctx context.Context, task CalendarTaskDoc) er
 		return NewFirestoreWriteError(err)
 	}
 
+	return nil
+}
+
+// UpdateCalendarTaskSyncResult updates Google Calendar sync metadata for a calendar task.
+func (s *Store) UpdateCalendarTaskSyncResult(ctx context.Context, taskID string, result CalendarTaskSyncResult) error {
+	updates := []firestore.Update{
+		{Path: "calendarSyncStatus", Value: result.CalendarSyncStatus},
+		{Path: "googleCalendarId", Value: result.GoogleCalendarID},
+		{Path: "googleCalendarEventId", Value: result.GoogleCalendarEventID},
+		{Path: "googleCalendarHtmlLink", Value: result.GoogleCalendarHTMLLink},
+		{Path: "calendarSyncError", Value: result.CalendarSyncError},
+		{Path: "updatedAt", Value: time.Now()},
+	}
+	if result.CalendarSyncedAt != nil {
+		updates = append(updates, firestore.Update{Path: "calendarSyncedAt", Value: result.CalendarSyncedAt})
+	}
+
+	docRef := s.client.Collection("calendar_tasks").Doc(taskID)
+	_, err := docRef.Update(ctx, updates)
+	if err != nil {
+		return NewFirestoreWriteError(err)
+	}
 	return nil
 }
 
