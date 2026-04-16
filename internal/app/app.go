@@ -74,9 +74,16 @@ func New(cfg infra.Config) (*App, error) {
 	gatekeeperUseCase := gatekeeper.NewUseCase(taskUseCase)
 	gatekeeperHandler := gatekeeper.NewHandler(gatekeeperUseCase)
 
-	// 6. Create HTTP router
+	// 6. Create LINE webhook handler (only if configured)
+	// 7. Create HTTP router
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/tasks", gatekeeperHandler.CreateTask)
+
+	// Only register LINE webhook if channel secret and bot user ID are configured
+	if cfg.LineChannelSecret != "" && cfg.LineBotUserID != "" {
+		lineHandler := gatekeeper.NewLineHandler(gatekeeperUseCase, cfg.LineChannelSecret, cfg.LineBotUserID)
+		mux.HandleFunc("POST /api/line/webhook", lineHandler.ServeHTTP)
+	}
 
 	return &App{
 		handler:        mux,

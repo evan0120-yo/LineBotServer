@@ -1,185 +1,141 @@
 # LineBot Backend TDD
 
+## Purpose
+
+這份文件列出目前已實作的測試，反映實際測試狀態。
+
+```text
+test scope
+├─ 已補測試：核心邏輯鎖住（Google Calendar sync + error handling + LINE webhook boundary）
+└─ 未補測試：其餘簡單邏輯透過手動驗證
+```
+
 ## Test Strategy
 
-本專案以 BDD scenario 對應測試。第一版測試重點放在 task flow、calendar validation、handler request boundary、Firestore mapping。
+第一版測試重點放在最容易出錯的邏輯：
 
 ```text
 test priority
-├─ usecase tests
-│  └─ lock end-to-end orchestration without real network
-├─ service tests
-│  └─ lock deterministic validation
-├─ repository tests
-│  └─ lock Firestore mapping
-└─ handler tests
-   └─ lock HTTP parse / response mapping
+├─ calendar usecase
+│  └─ Google Calendar sync 三種狀態（enabled/disabled/failed）
+│     └─ 確保 sync failure 不會導致 Firestore task 消失
+│
+├─ infra http
+│  └─ error handling 細節（missingFields / JSON strict decode）
+│
+└─ gatekeeper LINE webhook
+   └─ request-level ack / signature / mention cleanup / source mapping
 ```
 
-## Test Modules
+## Implemented Tests
+
+### calendar usecase
 
 ```text
-gatekeeper tests
-├─ POST /api/tasks rejects missing text
-├─ POST /api/tasks maps request to task usecase command
-└─ POST /api/tasks returns task result envelope
-
-task tests
-├─ passes supportedTaskTypes=["calendar"] to internalclient
-├─ dispatches taskType=calendar operation=create to calendar usecase
-├─ rejects unsupported taskType
-└─ rejects unsupported operation
-
-calendar tests
-├─ create succeeds with summary/startAt/endAt
-├─ create allows empty location
-├─ create rejects missing summary
-├─ create rejects missing startAt
-├─ create rejects missing endAt
-├─ create with sync disabled does not call provider
-├─ create with sync enabled calls provider after Firestore create
-├─ create stores provider success result
-└─ create stores sync failure without dropping task
-
-repository tests
-├─ creates calendar_tasks document
-├─ stores rawText
-├─ stores taskType
-├─ stores startAt/endAt separately
-├─ stores internal request/response snapshots
-└─ updates Google Calendar sync result fields
+calendar.UseCase tests
+├─ create with sync disabled
+│  └─ provider 不應被呼叫
+│  └─ calendarSyncStatus = not_enabled
+│
+├─ create with sync enabled
+│  └─ provider 應被呼叫
+│  └─ sync result 應寫回 Firestore
+│  └─ calendarSyncStatus = calendar_synced
+│
+├─ sync failure without dropping task
+│  └─ Firestore task 應保留
+│  └─ calendarSyncStatus = calendar_sync_failed
+│  └─ calendarSyncError 應保存
+│
+└─ required time missing
+   └─ startAt/endAt 缺失應拒絕
+   └─ repository 不應被呼叫
 ```
 
-## First Test Cases
+**Test files**: `internal/calendar/usecase_test.go`
 
-### gatekeeper
+**Test functions**:
+- `TestUseCaseCreateWhenGoogleCalendarDisabled`
+- `TestUseCaseCreateSyncsGoogleCalendar`
+- `TestUseCaseCreateMarksSyncFailedWithoutDroppingTask`
+- `TestUseCaseCreateReturnsErrorWhenRequiredTimeMissing`
+
+### infra http
 
 ```text
-TestCreateTaskRejectsMissingText
-Given request body text is empty
-When POST /api/tasks is called
-Then response code is 400
-And error code is TEXT_REQUIRED
-And task usecase is not called
+infra.HTTP tests
+├─ DecodeJSONStrict rejects trailing JSON
+│  └─ 確保只接受單一 JSON object
+│
+├─ NewInternalExtractionIncompleteError keeps missingFields
+│  └─ BusinessError 應保留 missingFields
+│
+└─ WriteError includes missingFields
+   └─ HTTP response error 應包含 missingFields
 ```
+
+**Test files**: `internal/infra/http_test.go`
+
+**Test functions**:
+- `TestDecodeJSONStrictRejectsTrailingJSONObject`
+- `TestNewInternalExtractionIncompleteErrorKeepsMissingFields`
+- `TestWriteErrorIncludesMissingFields`
+
+### gatekeeper LINE webhook
 
 ```text
-TestCreateTaskMapsRequestToTaskUseCase
-Given request body has text/referenceTime/timeZone
-When POST /api/tasks is called
-Then task usecase receives the same text/referenceTime/timeZone
+gatekeeper.LineHandler tests
+├─ invalid signature
+│  └─ should return 401 and skip task usecase
+├─ mention cleanup
+│  └─ should remove mention text and pass source="line"
+├─ no bot mention
+│  └─ should ignore event without calling task usecase
+└─ mixed event outcomes
+   └─ should still ack 200 and continue later events
 ```
 
-### task
+**Test files**: `internal/gatekeeper/line_handler_test.go`
+
+**Test functions**:
+- `TestLineHandlerServeHTTPRejectsInvalidSignature`
+- `TestLineHandlerServeHTTPCleansMentionAndUsesLineSource`
+- `TestLineHandlerServeHTTPIgnoresMessageWithoutBotMention`
+- `TestLineHandlerServeHTTPAcknowledgesWebhookWhenSomeEventsFail`
+
+## Not Tested (Manual Verification)
+
+以下邏輯透過手動驗證，未寫自動化測試：
 
 ```text
-TestTaskUseCaseSendsSupportedCalendarTaskType
-Given task registry contains calendar
-When CreateFromText calls internalclient
-Then LineTaskConsult command includes supportedTaskTypes=["calendar"]
+not tested
+├─ gatekeeper (REST API)
+│  └─ text validation / request mapping
+│     └─ 簡單 if 判斷，手動測試即可
+│
+├─ task
+│  └─ taskType / operation validation / dispatch
+│     └─ switch case 邏輯，手動測試即可
+│
+└─ repository
+   └─ Firestore mapping
+      └─ 需要 emulator，成本效益不高
 ```
+
+## Test Coverage Summary
 
 ```text
-TestTaskUseCaseDispatchesCalendarCreate
-Given internalclient returns taskType=calendar and operation=create
-When CreateFromText runs
-Then calendar usecase Create is called
-And result includes taskId
+coverage
+├─ calendar usecase: 4 tests (Google Calendar sync 邏輯)
+├─ infra http: 3 tests (error handling 細節)
+├─ gatekeeper line webhook: 4 tests (signature / mention / ack 邏輯)
+└─ others: manual verification
 ```
 
-```text
-TestTaskUseCaseRejectsUnsupportedTaskType
-Given internalclient returns taskType=unknown
-When CreateFromText runs
-Then calendar usecase is not called
-And error code is TASK_TYPE_UNSUPPORTED
-```
+第一版測試策略：**鎖住最容易出錯的邏輯（Google Calendar sync + webhook boundary），其他透過手動驗證**。
 
-```text
-TestTaskUseCaseRejectsUnsupportedOperation
-Given internalclient returns taskType=calendar and operation=update
-When CreateFromText runs
-Then calendar usecase is not called
-And error code is OPERATION_UNSUPPORTED
-```
+---
 
-### calendar
-
-```text
-TestCalendarCreateAllowsMissingLocation
-Given extraction has summary/startAt/endAt and empty location
-When calendar Create runs
-Then repository Create is called
-```
-
-```text
-TestCalendarCreateRejectsMissingRequiredFields
-Given extraction is missing summary or startAt or endAt
-When calendar Create runs
-Then repository Create is not called
-And error code is INTERNAL_EXTRACTION_INCOMPLETE
-```
-
-```text
-TestCalendarCreateSyncsToGoogleCalendarWhenEnabled
-Given calendar sync is enabled
-And repository Create succeeds
-And fake provider returns googleCalendarEventId and htmlLink
-When calendar Create runs
-Then provider CreateEvent is called with shared calendar id
-And repository UpdateSyncResult stores calendar_synced
-And result includes calendar sync metadata
-```
-
-```text
-TestCalendarCreateKeepsTaskWhenGoogleCalendarSyncFails
-Given calendar sync is enabled
-And repository Create succeeds
-And fake provider returns an error
-When calendar Create runs
-Then repository UpdateSyncResult stores calendar_sync_failed
-And created task is still returned with failed sync status
-```
-
-```text
-TestCalendarCreateDoesNotCallProviderWhenSyncDisabled
-Given calendar sync is disabled
-When calendar Create runs
-Then repository Create is called
-And provider CreateEvent is not called
-```
-
-## Fake Dependencies
-
-UseCase tests should use fakes instead of real network:
-
-```text
-task usecase test
-├─ fake internalclient
-└─ fake calendar usecase
-
-calendar usecase test
-├─ real calendar service
-├─ fake calendar repository
-└─ fake calendar provider
-
-gatekeeper handler test
-└─ fake task usecase
-```
-
-Repository tests may use Firestore emulator once repository code exists.
-
-## What Not To Test First
-
-第一版不要先寫：
-- real LINE webhook tests
-- real Google Calendar tests
-- live Internal AI Copilot tests
-- Gemma parsing tests
-
-這些屬於 integration / future scope。第一版先把 LineBot Backend 自己的 orchestration 和 persistence 邊界鎖住。
-
-Google Calendar testing rule:
-- Use fake provider for usecase tests.
-- Use real Google Calendar API only in manual integration testing.
-- Do not put real OAuth token or credentials into automated tests.
+**文件版本**：v2.0
+**最後更新**：2026-04-16
+**測試覆蓋**：核心邏輯鎖住，簡單邏輯手動驗證

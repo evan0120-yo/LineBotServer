@@ -12,13 +12,13 @@
 
 它的主要使用者有三種：
 - 內部測試者：用 Postman 打 REST API，快速驗證整條鏈路。
-- 未來 LINE 使用者：tag bot 後送出自然語句，系統自動建立任務。
+- LINE 使用者：tag bot 後送出自然語句，系統自動建立任務。
 - 開發者：維護 task type registry，新增功能時加新的 feature module。
 
 它目前比較像「任務分派中心」，不是完整的任務管理系統。第一版只做 create，不做 update/delete/query。第一版只支援 calendar，未來會有 note、reminder 等。任務會先寫 Firestore；若啟用 Google Calendar 設定，會再同步建立 shared calendar event。
 
 從 code 看得出的刻意選擇有幾個：
-- REST 和未來 LINE webhook 共用同一條 task usecase，不分兩套業務流程。
+- REST 和 LINE webhook 共用同一條 task usecase，不分兩套業務流程。
 - 任務類型用 TaskType registry 管理，LineBot Backend 告訴 Internal 支援哪些，Internal AI 從中選一個回傳。
 - Feature module 自包含 usecase/service/repository，calendar 不依賴 task，未來加 note 也不會影響 calendar。
 - Internal 的 request/response 序列化成 JSON 保存在 Firestore，方便追蹤 extraction 問題。
@@ -37,7 +37,7 @@
 
 ## A. 系統啟動後，骨架怎麼接起來
 
-這個服務啟動後只開 HTTP server，監聽 POST /api/tasks。
+這個服務啟動後只開 HTTP server，至少有一條固定 REST route，並在 LINE config 齊全時再註冊 webhook route。
 
 ```text
 main 啟動
@@ -73,7 +73,9 @@ main 啟動
    │  └─ handler (HTTP boundary)
    │
    ├─ 註冊 HTTP route
-   │  └─ POST /api/tasks -> gatekeeper.Handler.CreateTask
+   │  ├─ POST /api/tasks -> gatekeeper.Handler.CreateTask
+   │  └─ POST /api/line/webhook -> gatekeeper.LineHandler.ServeHTTP
+   │     └─ only when LINE channel secret + bot user id are configured
    │
    └─ 開 HTTP server
 ```
@@ -84,7 +86,7 @@ main 啟動
 
 ## B. POST /api/tasks 完整流程
 
-這是第一版唯一的 API endpoint，負責把自然語句轉成 calendar task。
+這是第一版最直接的測試入口，負責把自然語句轉成 calendar task。
 
 ```text
 POST /api/tasks
@@ -348,7 +350,7 @@ calendar_tasks/{taskId}
 
 規則：
 - taskId 使用 github.com/google/uuid 生成。
-- source 第一版固定 "rest"，未來 LINE webhook 使用 "line"。
+- source 由 gatekeeper 設定："rest" 或 "line"（依據請求來源）。
 - rawText 必須保存，方便追蹤 Internal extraction 問題。
 - startAt/endAt 不做格式轉換，直接保存 Internal 回傳值。
 - location 可空，missingFields 可包含 "location"。
@@ -362,24 +364,29 @@ calendar_tasks/{taskId}
 
 系統設計上已預留擴充空間。
 
-### F-1. LINE Webhook 串接
+### F-1. LINE Webhook 串接（已實作）
 
 ```text
-新增 gatekeeper/line_handler.go
-├─ 驗證 LINE signature
-├─ 解析 message event
-├─ 檢查 tag bot
-├─ 移除 mention 文字
+gatekeeper/line_handler.go
+├─ 驗證 LINE signature (HMAC-SHA256)
+│  └─ x-line-signature vs computed HMAC
+├─ 解析 webhook JSON events
+├─ 過濾 message events (type="message", message.type="text")
+├─ 檢查 bot mention
+│  └─ compare mentionee.UserID with botUserID
+├─ 移除 mention 文字 (using index + length)
 └─ 共用 gatekeeper.UseCase.CreateTask
    └─ source = "line"
 
-HTTP router 新增
-└─ POST /api/line/webhook -> lineHandler.HandleWebhook
+HTTP router
+└─ POST /api/line/webhook -> lineHandler.ServeHTTP
+   └─ 只在 LineChannelSecret 和 LineBotUserID 都設定時註冊（fail-closed）
 ```
 
-規則：
-- tag bot 是噪音閘門，不是任務指令。
-- 任務語意仍交給 Internal + Gemma 判斷。
+實作要點：
+- mention 檢測使用 webhook metadata，確保只有 mention 到這個 bot 才觸發。
+- mention 移除使用 `index` 和 `length` 欄位，準確移除（支援多位元組字元）。
+- 處理所有符合條件的 events，request-level response 固定回 200 ack + counts。
 - 共用 task usecase，不複製 calendar persistence 流程。
 
 ### F-2. 新增 Task Type (note)
@@ -493,7 +500,7 @@ Backend/
    ├─ app                     應用程式組裝
    │  └─ app.go               wiring all modules
    │
-   ├─ gatekeeper              REST / future LINE webhook boundary
+   ├─ gatekeeper              REST / LINE webhook boundary
    │  ├─ handler.go
    │  ├─ usecase.go
    │  └─ model.go
@@ -805,7 +812,6 @@ app integration test
 ├─ 只支援 calendar create
 ├─ 不支援 update/delete/query
 ├─ Google Calendar sync 只支援 create（方案 C）
-├─ 不接 LINE webhook
 ├─ 沒有 user authentication
 ├─ 沒有 CORS 設定
 └─ 沒有索引設計
@@ -818,9 +824,8 @@ app integration test
 ├─ 新增 task types（note / reminder）
 ├─ 支援 update/delete/query
 ├─ 擴充 Google Calendar update/delete/query
-├─ LINE webhook 整合
 ├─ 新增 Firestore 索引
-└─ 單元測試覆蓋
+└─ 單元測試覆蓋（包含 LINE webhook 測試）
 ```
 
 ---

@@ -24,8 +24,8 @@ SDD scope
 ```text
 LineBot Backend
 ├─ transport boundary
-│  ├─ REST first version
-│  └─ LINE webhook future
+│  ├─ REST API (POST /api/tasks)
+│  └─ LINE webhook (POST /api/line/webhook)
 ├─ task orchestration
 │  ├─ call Internal AI Copilot
 │  ├─ receive taskType + operation
@@ -47,7 +47,7 @@ Backend/
    ├─ app
    │  └─ config / store / module wiring
    ├─ gatekeeper
-   │  └─ REST and future LINE request boundary
+   │  └─ REST and LINE webhook request boundary
    ├─ task
    │  └─ Internal extraction + task dispatch
    ├─ calendar
@@ -268,7 +268,7 @@ calendar_tasks/{taskId}
 ```
 
 Rules:
-- `source=rest` in first version.
+- `source` 由 gatekeeper 依入口決定：REST 為 `rest`，LINE webhook 為 `line`。
 - `taskType=calendar` in first version.
 - `location` may be empty.
 - `startAt` and `endAt` are stored separately.
@@ -277,6 +277,136 @@ Rules:
   - `calendar_sync_pending`
   - `calendar_synced`
   - `calendar_sync_failed`
+
+## LINE Webhook Design
+
+```text
+LINE webhook integration
+├─ POST /api/line/webhook
+├─ verify LINE signature
+├─ parse LINE webhook events
+├─ filter message event
+├─ check mention (tag bot)
+├─ remove mention text
+└─ reuse task usecase (same as REST API)
+```
+
+### LINE Webhook Flow
+
+```text
+POST /api/line/webhook
+│
+▼
+gatekeeper.LineHandler
+├─ verify x-line-signature header
+│  ├─ read request body
+│  ├─ compute HMAC-SHA256(body, channelSecret)
+│  └─ compare with x-line-signature
+│     ├─ mismatch -> 401/403
+│     └─ match -> proceed
+│
+├─ parse LINE webhook JSON
+│  └─ events[]
+│
+├─ filter message event
+│  ├─ event.type == "message"
+│  └─ event.message.type == "text"
+│
+├─ check mention
+│  ├─ event.message.mention exists?
+│  ├─ mention includes this bot?
+│  └─ no mention -> ignore event
+│
+├─ remove mention text
+│  ├─ original: "@bot 小傑約明天吃午餐"
+│  └─ cleaned: "小傑約明天吃午餐"
+│
+└─ call gatekeeper.UseCase.CreateTask
+   ├─ source = "line"
+   ├─ text = cleaned message text
+   └─ same task flow as REST API
+
+webhook response
+├─ signature or JSON invalid
+│  └─ reject with 4xx
+└─ signature and JSON valid
+   └─ always return 200 ack
+      ├─ processedCount
+      ├─ successCount
+      └─ errorCount
+```
+
+### LINE Signature Verification
+
+```text
+signature verification
+├─ read x-line-signature header
+├─ read request body (preserve for parsing)
+├─ compute signature
+│  ├─ HMAC-SHA256(body, channelSecret)
+│  └─ base64 encode
+├─ compare
+│  ├─ match -> proceed
+│  └─ mismatch -> reject (401/403)
+│
+└─ prevent replay attack
+   └─ LINE signature is per-request unique
+```
+
+### LINE Mention Handling
+
+```text
+mention detection
+├─ event.message.mention exists?
+│  └─ mentions[] array
+│
+├─ check if bot is mentioned
+│  └─ iterate mentions[]
+│     └─ mention.type == "user" && mention belongs to this bot
+│
+└─ remove mention text
+   ├─ event.message.text contains mention string
+   ├─ remove mention prefix (e.g. "@bot ")
+   └─ trim spaces
+```
+
+Rules:
+- First version: all messages (group/private) require mention to trigger.
+- Future: relax for private chat (group requires mention, private does not).
+- Mention text removal happens at LINE handler layer, not in task usecase.
+- Task usecase receives cleaned text, same as REST API.
+- LINE webhook is acknowledged at request level; event-level business errors do not become webhook-level 4xx/5xx responses.
+
+### LINE Message Source
+
+```text
+LINE message source types
+├─ user (private chat)
+│  └─ source.type == "user"
+│     └─ source.userId
+│
+├─ group (group chat)
+│  └─ source.type == "group"
+│     ├─ source.groupId
+│     └─ source.userId (sender)
+│
+└─ room (multi-person chat, not group)
+   └─ source.type == "room"
+      ├─ source.roomId
+      └─ source.userId (sender)
+```
+
+First version: accept all source types if bot is mentioned.
+
+### LINE Config
+
+```text
+LINE configuration
+├─ LINEBOT_LINE_CHANNEL_SECRET
+│  └─ for signature verification
+└─ LINEBOT_LINE_CHANNEL_ACCESS_TOKEN
+   └─ for reply message (future)
+```
 
 ## Future Extension Shape
 

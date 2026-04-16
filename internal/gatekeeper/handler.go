@@ -41,6 +41,7 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Build CreateTaskCommand
 	command := CreateTaskCommand{
+		Source:        "rest",
 		Text:          req.Text,
 		ReferenceTime: req.ReferenceTime,
 		TimeZone:      req.TimeZone,

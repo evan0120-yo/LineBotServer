@@ -20,11 +20,12 @@ BDD scope
 
 ## Scope
 
-目前驗收範圍只包含已落地能力：
+目前驗收範圍包含已落地能力：
 
 ```text
 current scope
-├─ POST /api/tasks
+├─ POST /api/tasks (REST API)
+├─ POST /api/line/webhook (LINE Bot)
 ├─ Internal LineTaskConsult extraction
 ├─ Firestore calendar_tasks create
 └─ optional Google Calendar create sync
@@ -143,8 +144,92 @@ And response 應回 `TASK_TYPE_UNSUPPORTED`
 
 ### Scenario: unsupported operation in first version
 
-Given Internal 回傳 `taskType="calendar"`  
-And `operation="update"`  
-When LineBot Backend 處理此 extraction result  
-Then LineBot Backend 不應寫入 Firestore  
+Given Internal 回傳 `taskType="calendar"`
+And `operation="update"`
+When LineBot Backend 處理此 extraction result
+Then LineBot Backend 不應寫入 Firestore
 And response 應回 `OPERATION_UNSUPPORTED`
+
+## Scenario Group: LINE Webhook
+
+這組場景驗收 LINE Bot webhook 整合。
+
+```text
+LINE webhook boundary
+├─ POST /api/line/webhook
+├─ 驗證 LINE signature
+├─ 解析 LINE webhook events
+├─ 過濾 message event
+├─ 檢查 mention (tag bot)
+└─ 共用 task usecase (與 REST API 相同流程)
+```
+
+### Scenario: LINE message without mention is ignored
+
+Given LINE webhook 收到 message event
+And message text = "明天吃午餐"
+And message 沒有 mention bot
+When LineBot Backend 處理 webhook
+Then 不應呼叫 task usecase
+And 不應呼叫 Internal gRPC
+And 不應建立 Firestore task
+
+### Scenario: LINE message with mention creates task
+
+Given LINE webhook 收到 message event
+And message text = "@bot 小傑約明天吃午餐"
+And message 有 mention bot
+When LineBot Backend 處理 webhook
+Then 應移除 mention 文字
+And 應呼叫 task usecase with text = "小傑約明天吃午餐"
+And 應建立 `calendar_tasks/{taskId}` with `source="line"`
+And 不應因為 mention 影響 extraction 結果
+
+### Scenario: LINE webhook signature verification fails
+
+Given LINE webhook 收到 request
+And `x-line-signature` header 不正確
+When LineBot Backend 驗證 signature
+Then 不應處理 request body
+And 不應呼叫 task usecase
+And response 應回 401 或 403
+
+### Scenario: LINE webhook with non-message event
+
+Given LINE webhook 收到 event
+And event type = "follow" 或 "unfollow" 或其他非 message event
+When LineBot Backend 處理 webhook
+Then 不應呼叫 task usecase
+And 不應建立 Firestore task
+
+### Scenario: LINE message with mention in group chat
+
+Given LINE webhook 收到 message event
+And source type = "group"
+And message text = "@bot 提醒我明天開會"
+And message 有 mention bot
+When LineBot Backend 處理 webhook
+Then 應移除 mention 文字
+And 應呼叫 task usecase
+And 應建立 task with `source="line"`
+
+### Scenario: LINE webhook with multiple valid message events
+
+Given LINE webhook 一次收到多個 message event
+And 至少一筆 event mention bot 且可成功建立 task
+When LineBot Backend 處理 webhook
+Then 應逐筆處理可用的 message event
+And 不應因為其中一筆 event 失敗而中止整個 webhook
+And webhook response 應回 200 ack，避免整包 request 被 LINE 重送
+
+### Scenario: LINE message without mention in private chat
+
+Given LINE webhook 收到 message event
+And source type = "user" (私聊)
+And message text = "小傑約明天吃午餐"
+And message 沒有 mention bot
+When LineBot Backend 處理 webhook
+Then 第一版應忽略此訊息 (需要 mention 才處理)
+And 不應呼叫 task usecase
+
+> 注意：第一版統一要求 mention，避免在私聊時誤觸發。未來可放寬為「群組需要 mention，私聊不需要」。

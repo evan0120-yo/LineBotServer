@@ -6,31 +6,36 @@ import (
 	"linebot-backend/internal/task"
 )
 
+type taskCreator interface {
+	CreateFromText(ctx context.Context, command task.CreateFromTextCommand) (task.TaskResult, error)
+}
+
 // UseCase handles gatekeeper business logic.
 type UseCase struct {
-	taskUseCase *task.UseCase
+	taskUseCase taskCreator
 }
 
 // NewUseCase creates a new gatekeeper UseCase.
-func NewUseCase(taskUseCase *task.UseCase) *UseCase {
+func NewUseCase(taskUseCase taskCreator) *UseCase {
 	return &UseCase{
 		taskUseCase: taskUseCase,
 	}
 }
 
-// CreateTaskCommand holds parameters for creating a task from the REST API.
+// CreateTaskCommand holds parameters for creating a task.
 type CreateTaskCommand struct {
+	Source        string
 	Text          string
 	ReferenceTime string
 	TimeZone      string
 	ClientIP      string
 }
 
-// CreateTask creates a task from REST API request.
+// CreateTask creates a task from request.
 func (u *UseCase) CreateTask(ctx context.Context, command CreateTaskCommand) (task.TaskResult, error) {
 	// Build task.CreateFromTextCommand
 	taskCommand := task.CreateFromTextCommand{
-		Source:        "rest",
+		Source:        command.Source,
 		Text:          command.Text,
 		ReferenceTime: command.ReferenceTime,
 		TimeZone:      command.TimeZone,

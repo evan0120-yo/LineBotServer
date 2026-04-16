@@ -21,6 +21,9 @@ type Config struct {
 	GoogleOAuthTokenFile       string
 	ServerReadTimeout          time.Duration
 	ServerWriteTimeout         time.Duration
+	LineChannelSecret          string
+	LineChannelAccessToken     string
+	LineBotUserID              string
 }
 
 // LoadConfigFromEnv loads configuration from environment variables.
@@ -39,6 +42,9 @@ func LoadConfigFromEnv() Config {
 		GoogleOAuthTokenFile:       os.Getenv("LINEBOT_GOOGLE_OAUTH_TOKEN_FILE"),
 		ServerReadTimeout:          getEnvDuration("LINEBOT_SERVER_READ_TIMEOUT", 10*time.Second),
 		ServerWriteTimeout:         getEnvDuration("LINEBOT_SERVER_WRITE_TIMEOUT", 5*time.Minute),
+		LineChannelSecret:          os.Getenv("LINEBOT_LINE_CHANNEL_SECRET"),
+		LineChannelAccessToken:     os.Getenv("LINEBOT_LINE_CHANNEL_ACCESS_TOKEN"),
+		LineBotUserID:              os.Getenv("LINEBOT_LINE_BOT_USER_ID"),
 	}
 }
 

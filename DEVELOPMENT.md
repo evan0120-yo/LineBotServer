@@ -13,7 +13,8 @@ LineBot Backend
 ├─ 驗證 Internal 回傳的任務抽取結果
 ├─ 依 taskType 分派到功能 module
 ├─ 將任務資料寫入 Firestore
-└─ 未來再擴充 LINE webhook；Google Calendar create sync 已接入
+├─ 從 LINE webhook 接收 mention message
+└─ optional Google Calendar create sync
 ```
 
 Internal AI Copilot 是 AI 溝通與自然語句解析的唯一來源。LineBot Backend 不自行建立另一套 AI pipeline。
@@ -23,7 +24,7 @@ Internal AI Copilot 是 AI 溝通與自然語句解析的唯一來源。LineBot 
 ```text
 In scope
 ├─ REST API 測試入口
-├─ 未來 LINE webhook handler
+├─ LINE webhook handler
 ├─ Internal gRPC client
 ├─ Firestore task persistence
 ├─ Calendar task usecase orchestration
@@ -39,7 +40,6 @@ Out of scope
 規則：
 - 不碰 LinkChat 專案。
 - 不在本專案重做 Internal 的 builder / aiclient / prompt 邏輯。
-- 第一版只做 RESTful 測試入口，不接正式 LINE webhook。
 - Google Calendar 串接採方案 C：OAuth user token 寫入使用者與伴侶共用的 Google Calendar。
 
 ## Architecture
@@ -58,7 +58,7 @@ Handler
 ```text
 Layer 1: Handler
 ├─ REST handler
-├─ future LINE webhook handler
+├─ LINE webhook handler
 ├─ request parse
 ├─ response mapping
 └─ 不做業務流程與 Firestore 存取
@@ -99,7 +99,7 @@ cmd/api
 - Handler 不直接呼叫 Repository。
 - Repository 不依賴 UseCase / Service。
 - Service 不依賴 HTTP / LINE / gRPC transport model。
-- future LineBot handler 與 REST handler 不各自複製任務流程，兩者必須共用 task UseCase。
+- LineBot webhook handler 與 REST handler 不各自複製任務流程，兩者必須共用 task UseCase。
 - calendar 不反向依賴 task。
 - internalclient 不理解 calendar 業務。
 
@@ -128,7 +128,7 @@ Backend/
 ```
 
 補充：
-- `gatekeeper` 是 REST / future LINE webhook 的入口邊界。
+- `gatekeeper` 是 REST / LINE webhook 的入口邊界。
 - `task` 是 AI task orchestration、supported task type registry 與分派位置。
 - `calendar` 是目前第一個功能 module，擁有自己的 usecase / service / repository。
 - `internalclient` 只負責 Internal AI Copilot gRPC integration。
@@ -329,9 +329,9 @@ LINEBOT_GOOGLE_OAUTH_TOKEN_FILE=<stored-token-json-path>
 - token 應放在本機或部署環境的 secret path。
 - shared calendar id 必須可被該 OAuth user 寫入。
 
-## Future LINE Webhook Rule
+## LINE Webhook Rule
 
-未來接 LINE 時使用 tag bot 作為觸發門檻，不使用固定前綴。
+LINE webhook 使用 tag bot 作為觸發門檻，不使用固定前綴。
 
 ```text
 LINE message event
@@ -347,6 +347,8 @@ LINE message event
 - tag bot 只負責聊天室噪音閘門，不是業務指令。
 - 是否為任務內容交給 Internal + Gemma 判斷。
 - LINE webhook handler 不複製 REST handler 的業務流程。
+- webhook 在 signature 與 JSON 驗證通過後，會以 200 ack 整包 request。
+- event 級別業務錯誤不回給 LINE，避免 webhook 重送整包 payload。
 
 ## Future Operation Rule
 
@@ -395,7 +397,7 @@ query  -> Firestore / Google Calendar list strategy 待定
 1. 是否仍和 LinkChat 無關。
 2. 是否仍由 Internal 負責 AI parsing。
 3. Handler 是否只做 transport mapping。
-4. REST 與 future LINE 是否共用同一個 UseCase。
+4. REST 與 LINE 是否共用同一個 UseCase。
 5. startAt / endAt 缺失是否被視為錯誤。
 6. location 是否維持 optional。
 7. Google Calendar sync 是否保持 Firestore source of truth。
