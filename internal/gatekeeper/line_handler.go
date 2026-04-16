@@ -1,16 +1,21 @@
 package gatekeeper
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"linebot-backend/internal/infra"
 )
+
+const lineEventProcessingTimeout = 30 * time.Second
 
 // LineHandler handles LINE webhook requests.
 type LineHandler struct {
@@ -33,6 +38,7 @@ func (h *LineHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		log.Printf("[INFO] line webhook read body failed: err=%v", err)
 		infra.WriteError(w, infra.NewError("INVALID_REQUEST", "Failed to read request body", http.StatusBadRequest))
 		return
 	}
@@ -40,6 +46,7 @@ func (h *LineHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Verify LINE signature
 	signature := r.Header.Get("x-line-signature")
 	if !h.verifySignature(body, signature) {
+		log.Printf("[INFO] line webhook signature verification failed: remote=%s", r.RemoteAddr)
 		infra.WriteError(w, infra.NewError("INVALID_SIGNATURE", "LINE signature verification failed", http.StatusUnauthorized))
 		return
 	}
@@ -47,44 +54,54 @@ func (h *LineHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Parse LINE webhook JSON
 	var webhookReq LineWebhookRequest
 	if err := json.Unmarshal(body, &webhookReq); err != nil {
+		log.Printf("[INFO] line webhook invalid json: err=%v", err)
 		infra.WriteError(w, infra.NewError("INVALID_JSON", "Failed to parse LINE webhook JSON", http.StatusBadRequest))
 		return
 	}
+	log.Printf("[INFO] line webhook received: events=%d remote=%s", len(webhookReq.Events), r.RemoteAddr)
 
 	// Process all events and always acknowledge the webhook once signature and JSON are valid.
 	// Event-level failures should not cause LINE to retry the whole webhook payload.
-	ctx := r.Context()
 	processedCount := 0
 	successCount := 0
 	errorCount := 0
 
-	for _, event := range webhookReq.Events {
+	for i, event := range webhookReq.Events {
+		log.Printf("[INFO] line webhook event[%d]: type=%s messageType=%s sourceType=%s sourceUserID=%s", i, event.Type, event.Message.Type, event.Source.Type, event.Source.UserID)
+
 		// Filter message event
 		if event.Type != "message" {
+			log.Printf("[INFO] line webhook event[%d] skipped: reason=non_message type=%s", i, event.Type)
 			continue
 		}
 
 		if event.Message.Type != "text" {
+			log.Printf("[INFO] line webhook event[%d] skipped: reason=non_text messageType=%s", i, event.Message.Type)
 			continue
 		}
 
 		// Check if bot is mentioned
 		botMention := h.findBotMention(event.Message)
 		if botMention == nil {
+			log.Printf("[INFO] line webhook event[%d] skipped: reason=bot_not_mentioned configuredBotUserID=%s mentioneeCount=%d", i, h.botUserID, mentionCount(event.Message))
 			continue
 		}
+		log.Printf("[INFO] line webhook event[%d] mention matched: mentionUserID=%s index=%d length=%d", i, botMention.UserID, botMention.Index, botMention.Length)
 
 		// Remove mention text using mention metadata
 		cleanedText := h.removeMentionText(event.Message.Text, botMention)
 		if cleanedText == "" {
+			log.Printf("[INFO] line webhook event[%d] skipped: reason=empty_after_cleanup rawText=%q", i, event.Message.Text)
 			continue
 		}
 
 		// Validate text not empty after cleaning
 		cleanedText = strings.TrimSpace(cleanedText)
 		if cleanedText == "" {
+			log.Printf("[INFO] line webhook event[%d] skipped: reason=blank_after_trim rawText=%q", i, event.Message.Text)
 			continue
 		}
+		log.Printf("[INFO] line webhook event[%d] accepted: rawText=%q cleanedText=%q", i, event.Message.Text, cleanedText)
 
 		// Build command
 		command := CreateTaskCommand{
@@ -97,13 +114,20 @@ func (h *LineHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Call usecase
 		processedCount++
-		if _, err := h.useCase.CreateTask(ctx, command); err != nil {
+		log.Printf("[INFO] line webhook event[%d] calling gatekeeper usecase", i)
+		ctx, cancel := context.WithTimeout(context.Background(), lineEventProcessingTimeout)
+		_, err := h.useCase.CreateTask(ctx, command)
+		cancel()
+		if err != nil {
 			errorCount++
+			log.Printf("[INFO] line webhook event[%d] usecase failed: err=%v", i, err)
 			continue
 		}
 
 		successCount++
+		log.Printf("[INFO] line webhook event[%d] completed successfully", i)
 	}
+	log.Printf("[INFO] line webhook response: processed=%d success=%d error=%d", processedCount, successCount, errorCount)
 
 	infra.WriteJSON(w, http.StatusOK, map[string]any{
 		"status":         "ok",
@@ -141,6 +165,14 @@ func (h *LineHandler) findBotMention(message LineMessage) *LineMentionee {
 	}
 
 	return nil
+}
+
+func mentionCount(message LineMessage) int {
+	if message.Mention == nil {
+		return 0
+	}
+
+	return len(message.Mention.Mentionees)
 }
 
 // removeMentionText removes mention text using LINE webhook mention metadata.
