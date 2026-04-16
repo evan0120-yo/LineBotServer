@@ -6,6 +6,8 @@
 
 這個 Go backend 是一個「自然語句任務轉換器」。
 
+這份文件是 current implementation walkthrough，不是驗收規格，也不是未來設計稿。
+
 真正的產品核心不是做 AI，而是把日常對話轉成可執行任務。它不處理 AI 的 prompt 組裝、不管 Gemma 怎麼選，那些都交給 Internal AI Copilot。LineBot Backend 專注在：任務入口、任務分派、任務保存。
 
 它的主要使用者有三種：
@@ -53,6 +55,9 @@ main 啟動
    │
    ├─ 建 Internal gRPC client
    │  └─ 連到 Internal AI Copilot backend
+   │
+   ├─ 若 Google Calendar enabled
+   │  └─ 建 Google Calendar client
    │
    ├─ 組 calendar module
    │  ├─ service (validation)
@@ -190,9 +195,14 @@ gatekeeper.Handler (繼續)
              "startAt": "2026-04-16 12:00:00",
              "endAt": "2026-04-16 12:30:00",
              "location": "",
-             "missingFields": ["location"]
-           }
-         }
+             "missingFields": ["location"],
+             "calendarSyncStatus": "calendar_synced | calendar_sync_failed | not_enabled",
+             "googleCalendarId": "",
+             "googleCalendarEventId": "",
+             "googleCalendarHtmlLink": "",
+             "calendarSyncError": ""
+            }
+          }
 ```
 
 > 注意：referenceTime 和 timeZone 可由 request 覆蓋；若未提供，Internal backend 會補系統時間/時區。
@@ -277,7 +287,8 @@ Validation 層級
 業務層產生 BusinessError
 ├─ Code
 ├─ Message
-└─ HTTPStatus
+├─ HTTPStatus
+└─ MissingFields optional
    │
    ▼
 傳播到 gatekeeper.Handler
@@ -294,7 +305,8 @@ infra.WriteError()
      "success": false,
      "error": {
        "code": "ERROR_CODE",
-       "message": "error message"
+       "message": "error message",
+       "missingFields": ["startAt", "endAt"]
      }
    }
 ```
@@ -505,6 +517,7 @@ Backend/
    └─ infra                   Shared infrastructure
       ├─ config.go
       ├─ errors.go
+      ├─ google_calendar_client.go
       ├─ http.go
       ├─ store.go
       └─ model.go
@@ -550,6 +563,13 @@ LINEBOT_FIRESTORE_EMULATOR_HOST=localhost:8090
 LINEBOT_INTERNAL_GRPC_ADDR=localhost:9091
 LINEBOT_INTERNAL_APP_ID=linebot-app
 LINEBOT_INTERNAL_BUILDER_ID=4
+
+# Google Calendar
+LINEBOT_GOOGLE_CALENDAR_ENABLED=true
+LINEBOT_GOOGLE_CALENDAR_ID=<shared-calendar-id>
+LINEBOT_GOOGLE_CALENDAR_TIME_ZONE=Asia/Taipei
+LINEBOT_GOOGLE_OAUTH_CREDENTIALS_FILE=<client-secret-json-path>
+LINEBOT_GOOGLE_OAUTH_TOKEN_FILE=<stored-token-json-path>
 
 # Timeout
 LINEBOT_SERVER_READ_TIMEOUT=10s

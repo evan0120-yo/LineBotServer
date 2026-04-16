@@ -32,7 +32,7 @@ In scope
 Out of scope
 ├─ LinkChat
 ├─ Internal AI prompt / Gemma 邏輯
-├─ Google Calendar 第一版串接
+├─ Google Calendar update / delete / query
 └─ 任務文字的本地 AI 判斷
 ```
 
@@ -286,7 +286,7 @@ Google Calendar 串接採方案 C。
 架構規則：
 - Firestore 是 task source of truth。
 - Google Calendar 是外部同步目標。
-- calendar usecase 依賴 `CalendarProvider` interface。
+- calendar usecase 依賴 `infra.GoogleCalendarProvider` interface。
 - Google SDK / OAuth token loading 放在 infra。
 - Google Calendar sync 失敗時，不應刪除已建立的 Firestore task。
 
@@ -296,7 +296,7 @@ calendar.UseCase.Create
 ├─ Repository.Create
 ├─ sync enabled?
 │  ├─ no  -> return Firestore-only result
-│  └─ yes -> CalendarProvider.CreateEvent
+│  └─ yes -> infra.GoogleCalendarProvider.CreateEvent
 │
 ├─ provider success
 │  └─ Repository.UpdateSyncResult(calendar_synced)
