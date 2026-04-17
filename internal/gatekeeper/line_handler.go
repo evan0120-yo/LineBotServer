@@ -20,14 +20,16 @@ const lineEventProcessingTimeout = 30 * time.Second
 // LineHandler handles LINE webhook requests.
 type LineHandler struct {
 	useCase       *UseCase
+	replyClient   infra.LineReplyProvider
 	channelSecret string
 	botUserID     string
 }
 
 // NewLineHandler creates a new LINE webhook handler.
-func NewLineHandler(useCase *UseCase, channelSecret string, botUserID string) *LineHandler {
+func NewLineHandler(useCase *UseCase, replyClient infra.LineReplyProvider, channelSecret string, botUserID string) *LineHandler {
 	return &LineHandler{
 		useCase:       useCase,
+		replyClient:   replyClient,
 		channelSecret: channelSecret,
 		botUserID:     botUserID,
 	}
@@ -116,14 +118,24 @@ func (h *LineHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		processedCount++
 		log.Printf("[INFO] line webhook event[%d] calling gatekeeper usecase", i)
 		ctx, cancel := context.WithTimeout(context.Background(), lineEventProcessingTimeout)
-		_, err := h.useCase.CreateTask(ctx, command)
-		cancel()
+		result, err := h.useCase.CreateTask(ctx, command)
 		if err != nil {
 			errorCount++
 			log.Printf("[INFO] line webhook event[%d] usecase failed: err=%v", i, err)
+			if replyErr := h.reply(ctx, event.ReplyToken, infra.ErrorReplyMessage(err)); replyErr != nil {
+				log.Printf("[INFO] line webhook event[%d] error reply failed: err=%v", i, replyErr)
+			}
+			cancel()
 			continue
 		}
 
+		if replyErr := h.reply(ctx, event.ReplyToken, result.ReplyText); replyErr != nil {
+			errorCount++
+			log.Printf("[INFO] line webhook event[%d] reply failed: err=%v", i, replyErr)
+			cancel()
+			continue
+		}
+		cancel()
 		successCount++
 		log.Printf("[INFO] line webhook event[%d] completed successfully", i)
 	}
@@ -134,6 +146,16 @@ func (h *LineHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"processedCount": processedCount,
 		"successCount":   successCount,
 		"errorCount":     errorCount,
+	})
+}
+
+func (h *LineHandler) reply(ctx context.Context, replyToken, text string) error {
+	if h.replyClient == nil {
+		return infra.NewError("LINE_REPLY_NOT_CONFIGURED", "LINE reply client is not configured", http.StatusInternalServerError)
+	}
+	return h.replyClient.ReplyText(ctx, infra.LineReplyCommand{
+		ReplyToken: replyToken,
+		Text:       text,
 	})
 }
 

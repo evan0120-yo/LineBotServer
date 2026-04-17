@@ -8,33 +8,37 @@
 SDD scope
 ├─ module boundary
 ├─ dependency direction
-├─ runtime data flow
-├─ ownership
-└─ contracts / schema
+├─ runtime flow
+├─ contracts
+└─ ownership
 ```
 
-不在這份文件裡處理：
+這份文件不處理：
 - 大量驗收場景
+- bug review
 - 目前 code 導覽口吻
-- bug / risk review
-- 測試清單
+- 測試案例清單
 
 ## System Overview
+
+新的目標架構是 Calendar-only，LineBot Backend 不再依賴 Firestore。
 
 ```text
 LineBot Backend
 ├─ transport boundary
-│  ├─ REST API (POST /api/tasks)
-│  └─ LINE webhook (POST /api/line/webhook)
+│  ├─ REST API
+│  └─ LINE webhook
 ├─ task orchestration
 │  ├─ call Internal AI Copilot
-│  ├─ receive taskType + operation
-│  └─ dispatch to feature module
-├─ feature modules
-│  └─ calendar + optional Google Calendar sync
-└─ persistence / integration
-   ├─ Firestore
-   └─ Google Calendar shared calendar
+│  ├─ receive structured JSON
+│  └─ dispatch by operation
+├─ operation factory
+│  ├─ create
+│  ├─ query
+│  ├─ delete
+│  └─ update
+└─ external system
+   └─ Google Calendar
 ```
 
 ## Package Architecture
@@ -45,17 +49,17 @@ Backend/
 │  └─ process entrypoint
 └─ internal
    ├─ app
-   │  └─ config / store / module wiring
+   │  └─ config / module wiring / router
    ├─ gatekeeper
-   │  └─ REST and LINE webhook request boundary
+   │  └─ REST and LINE webhook boundary
    ├─ task
-   │  └─ Internal extraction + task dispatch
+   │  └─ Internal extraction + operation dispatch
    ├─ calendar
-   │  └─ calendar task usecase / service / repository
+   │  └─ Google Calendar feature module
    ├─ internalclient
    │  └─ Internal AI Copilot gRPC client
    └─ infra
-      └─ config / errors / response / Firestore / Google Calendar client
+      └─ config / errors / response / Google Calendar client
 ```
 
 ## Module Responsibilities
@@ -63,24 +67,29 @@ Backend/
 ```text
 app
 ├─ load config
-├─ create store / gRPC client / Google client
-└─ wire modules and HTTP router
+├─ create Internal gRPC client
+├─ create Google Calendar client
+└─ wire HTTP handlers and operation modules
 
 gatekeeper
 ├─ parse request
 ├─ validate boundary input
-├─ resolve client IP
-└─ map HTTP <-> task usecase
+├─ verify LINE signature
+├─ clean mention text
+└─ map transport request to task usecase
 
 task
-├─ build LineTaskConsult request
-├─ validate supported taskType / operation
-└─ dispatch to feature module
+├─ build Internal LineTaskConsult request
+├─ validate taskType / operation
+├─ normalize extraction result
+└─ dispatch to operation factory
 
 calendar
-├─ validate required extraction fields
-├─ persist calendar task
-└─ optionally sync external Google Calendar event
+├─ create event
+├─ query events by time range
+├─ delete event by eventId
+├─ update event title by eventId
+└─ format reply payload
 
 internalclient
 ├─ hide protobuf details
@@ -90,7 +99,6 @@ infra
 ├─ shared config
 ├─ business errors
 ├─ HTTP envelope
-├─ Firestore store
 └─ Google Calendar adapter
 ```
 
@@ -123,11 +131,13 @@ Avoid:
 ```text
 calendar -> task
 internalclient -> calendar
-repository -> usecase
-handler -> repository
+handler -> google sdk
+handler -> repository-like persistence
 ```
 
 ## Main Runtime Flow
+
+### REST
 
 ```text
 POST /api/tasks
@@ -140,78 +150,72 @@ gatekeeper.Handler
    │
    ▼
 gatekeeper.UseCase
-└─ call task.UseCase.CreateFromText
-   │
-   ▼
+└─ call task.UseCase.ExecuteFromText
+```
+
+### LINE webhook
+
+```text
+POST /api/line/webhook
+│
+▼
+gatekeeper.LineHandler
+├─ verify signature
+├─ parse webhook JSON
+├─ filter text message event
+├─ check bot mention
+├─ remove mention text
+└─ call same gatekeeper.UseCase
+```
+
+### Shared task flow
+
+```text
 task.UseCase
-├─ build Internal request
+├─ build Internal LineTaskConsult request
+│  ├─ appId
+│  ├─ builderId
+│  ├─ messageText
+│  ├─ referenceTime
+│  ├─ timeZone
+│  └─ supportedTaskTypes=["calendar"]
+│
 ├─ call internalclient.Service.LineTaskConsult
 ├─ validate taskType
 ├─ validate operation
-└─ dispatch by taskType
-   │
-   ▼
-calendar.UseCase.Create
-├─ ValidateCreate(summary/startAt/endAt)
-├─ Repository.Create
-│  └─ Firestore calendar_tasks
-└─ optional infra.GoogleCalendarProvider.CreateEvent
-   └─ Repository.UpdateSyncResult
+└─ dispatch by operation
+   ├─ create -> calendar.UseCase.Create
+   ├─ query  -> calendar.UseCase.Query
+   ├─ delete -> calendar.UseCase.Delete
+   └─ update -> calendar.UseCase.Update
 ```
 
-## Google Calendar Sync Design
+## Operation Factory
+
+目前工廠不是 taskType 工廠，而是 operation 工廠。
 
 ```text
-ownership
-├─ Firestore
-│  └─ task source of truth
-├─ Google Calendar shared calendar
-│  └─ user-visible external calendar
-└─ OAuth token
-   └─ authorizes write access to configured shared calendar
-```
-
-```text
-calendar.UseCase.Create
-├─ Repository.Create
-│  ├─ sync enabled  -> calendarSyncStatus=calendar_sync_pending
-│  └─ sync disabled -> calendarSyncStatus=not_enabled
-│
-├─ sync disabled?
-│  └─ return Firestore-only result
-│
-├─ infra.GoogleCalendarProvider.CreateEvent
-│  ├─ calendarId
-│  ├─ summary
-│  ├─ startAt + timeZone
-│  ├─ endAt + timeZone
-│  └─ location optional
-│
-├─ success
-│  └─ Repository.UpdateSyncResult
-│     ├─ calendarSyncStatus=calendar_synced
-│     ├─ googleCalendarId
-│     ├─ googleCalendarEventId
-│     ├─ googleCalendarHtmlLink
-│     └─ calendarSyncedAt
-│
-└─ failure
-   └─ Repository.UpdateSyncResult
-      ├─ calendarSyncStatus=calendar_sync_failed
-      └─ calendarSyncError
+calendar operation factory
+├─ create
+│  └─ create Google Calendar event
+├─ query
+│  └─ list events by time range + overlap filter
+├─ delete
+│  └─ delete by eventId
+└─ update
+   └─ update title by eventId
 ```
 
 Rules:
-- Firestore create success is preserved even when Google Calendar sync fails.
-- Google Calendar sync result must be visible in Firestore and API response.
-- Google adapter is replaceable; calendar usecase depends on interface, not SDK types.
+- 第一版只支援 `taskType="calendar"`。
+- operation factory 必須至少支援 `create / query / delete / update`。
+- delete / update 不再依賴 Firestore 查 mapping。
 
-## Task Type Contract
+## Internal Contract
 
-```text
-supportedTaskTypes
-└─ calendar
-```
+LineBot Backend 仍把 AI 理解交給 Internal。
+
+### Request
 
 ```text
 LineTaskConsultRequest
@@ -222,61 +226,139 @@ LineTaskConsultRequest
 ├─ timeZone
 ├─ supportedTaskTypes[]
 └─ clientIp
+```
 
+### Response
+
+```text
 LineTaskConsultResponse
 ├─ taskType
 ├─ operation
+├─ eventId
 ├─ summary
 ├─ startAt
 ├─ endAt
+├─ queryStartAt
+├─ queryEndAt
 ├─ location
 └─ missingFields[]
 ```
 
 Rules:
-- LineBot Backend decides which task types are available.
-- Internal decides which one the message belongs to.
-- `task` dispatches by returned `taskType`.
+- Internal prompt return 需要補 `eventId` 欄位。
+- `create` 時，Internal 回傳的 `eventId` 可為空字串；真正 eventId 由 Google Calendar create 結果決定。
+- `delete` / `update` 時，LineBot Backend 直接使用 JSON 內的 `eventId`。
+- `query` 時，主查詢條件是 `queryStartAt` 與 `queryEndAt`。
 
-## Firestore Contract
+## Google Calendar Contract
+
+### Create
 
 ```text
-calendar_tasks/{taskId}
-├─ taskId
-├─ source
-├─ rawText
-├─ taskType
-├─ operation
+input
+├─ calendarId
 ├─ summary
 ├─ startAt
 ├─ endAt
-├─ location
-├─ missingFields
-├─ status
-├─ calendarSyncStatus
-├─ googleCalendarId
-├─ googleCalendarEventId
-├─ googleCalendarHtmlLink
-├─ calendarSyncError
-├─ calendarSyncedAt
-├─ internalAppId
-├─ internalBuilderId
-├─ internalRequest
-├─ internalResponse
-├─ createdAt
-└─ updatedAt
+├─ timeZone
+└─ location optional
+
+output
+├─ eventId
+├─ summary
+├─ startAt
+├─ endAt
+└─ htmlLink optional
+```
+
+### Query
+
+```text
+input
+├─ calendarId
+├─ queryStartAt
+├─ queryEndAt
+└─ timeZone
+
+output events[]
+├─ eventId
+├─ summary
+├─ startAt
+├─ endAt
+└─ location
+```
+
+### Delete
+
+```text
+input
+├─ calendarId
+└─ eventId
+```
+
+### Update
+
+```text
+input
+├─ calendarId
+├─ eventId
+└─ summary
+```
+
+## Query Design
+
+### Query Strategy
+
+query 主條件只用時間區間，不用 title 搜尋。
+
+```text
+query strategy
+├─ fetch candidate events by time window
+└─ apply overlap rule in LineBot Backend
+```
+
+### Overlap Rule
+
+```text
+match when
+eventStart <= queryEnd
+AND
+eventEnd >= queryStart
+```
+
+這代表：
+- 事件完全包住查詢區間，要查得到
+- 查詢區間包住事件，要查得到
+- 只要時間邊界相接，也算查得到
+
+## Reply Formatting Contract
+
+LineBot 最終回覆不是 raw JSON，而是格式化文字。
+
+### Single event
+
+```text
+0001
+小傑約明天吃晚餐
+2026-04-18 12:00 (週五) ~ 2026-04-18 12:30 (週五)
+```
+
+### Multiple events
+
+```text
+0001
+小傑約明天吃晚餐
+2026-04-18 12:00 (週五) ~ 2026-04-18 12:30 (週五)
+
+0002
+回診
+2026-04-18 15:00 (週五) ~ 2026-04-18 15:30 (週五)
 ```
 
 Rules:
-- `source` 由 gatekeeper 依入口決定：REST 為 `rest`，LINE webhook 為 `line`。
-- `taskType=calendar` in first version.
-- `location` may be empty.
-- `startAt` and `endAt` are stored separately.
-- `calendarSyncStatus` values:
-  - `not_enabled`
-  - `calendar_sync_pending`
-  - `calendar_synced`
-  - `calendar_sync_failed`
+- `eventId` 不加前綴。
+- 沒資料固定回 `沒資料`。
+- 錯誤回精簡文字，不回完整 log。
 
 ## LINE Webhook Design
 
@@ -284,142 +366,38 @@ Rules:
 LINE webhook integration
 ├─ POST /api/line/webhook
 ├─ verify LINE signature
-├─ parse LINE webhook events
-├─ filter message event
-├─ check mention (tag bot)
+├─ parse webhook events
+├─ filter text message
+├─ require bot mention
 ├─ remove mention text
-└─ reuse task usecase (same as REST API)
-```
-
-### LINE Webhook Flow
-
-```text
-POST /api/line/webhook
-│
-▼
-gatekeeper.LineHandler
-├─ verify x-line-signature header
-│  ├─ read request body
-│  ├─ compute HMAC-SHA256(body, channelSecret)
-│  └─ compare with x-line-signature
-│     ├─ mismatch -> 401/403
-│     └─ match -> proceed
-│
-├─ parse LINE webhook JSON
-│  └─ events[]
-│
-├─ filter message event
-│  ├─ event.type == "message"
-│  └─ event.message.type == "text"
-│
-├─ check mention
-│  ├─ event.message.mention exists?
-│  ├─ mention includes this bot?
-│  └─ no mention -> ignore event
-│
-├─ remove mention text
-│  ├─ original: "@bot 小傑約明天吃午餐"
-│  └─ cleaned: "小傑約明天吃午餐"
-│
-└─ call gatekeeper.UseCase.CreateTask
-   ├─ source = "line"
-   ├─ text = cleaned message text
-   └─ same task flow as REST API
-
-webhook response
-├─ signature or JSON invalid
-│  └─ reject with 4xx
-└─ signature and JSON valid
-   └─ always return 200 ack
-      ├─ processedCount
-      ├─ successCount
-      └─ errorCount
-```
-
-### LINE Signature Verification
-
-```text
-signature verification
-├─ read x-line-signature header
-├─ read request body (preserve for parsing)
-├─ compute signature
-│  ├─ HMAC-SHA256(body, channelSecret)
-│  └─ base64 encode
-├─ compare
-│  ├─ match -> proceed
-│  └─ mismatch -> reject (401/403)
-│
-└─ prevent replay attack
-   └─ LINE signature is per-request unique
-```
-
-### LINE Mention Handling
-
-```text
-mention detection
-├─ event.message.mention exists?
-│  └─ mentions[] array
-│
-├─ check if bot is mentioned
-│  └─ iterate mentions[]
-│     └─ mention.type == "user" && mention belongs to this bot
-│
-└─ remove mention text
-   ├─ event.message.text contains mention string
-   ├─ remove mention prefix (e.g. "@bot ")
-   └─ trim spaces
+└─ reuse same task usecase
 ```
 
 Rules:
-- First version: all messages (group/private) require mention to trigger.
-- Future: relax for private chat (group requires mention, private does not).
-- Mention text removal happens at LINE handler layer, not in task usecase.
-- Task usecase receives cleaned text, same as REST API.
-- LINE webhook is acknowledged at request level; event-level business errors do not become webhook-level 4xx/5xx responses.
+- group/private 第一版都要求 mention。
+- mention 只負責觸發閘門，不負責任務分類。
+- LINE handler 不做 operation 判斷；operation 由 Internal 回傳後交給 task 層處理。
 
-### LINE Message Source
+## Config
 
 ```text
-LINE message source types
-├─ user (private chat)
-│  └─ source.type == "user"
-│     └─ source.userId
-│
-├─ group (group chat)
-│  └─ source.type == "group"
-│     ├─ source.groupId
-│     └─ source.userId (sender)
-│
-└─ room (multi-person chat, not group)
-   └─ source.type == "room"
-      ├─ source.roomId
-      └─ source.userId (sender)
-```
-
-First version: accept all source types if bot is mentioned.
-
-### LINE Config
-
-```text
-LINE configuration
+required config
+├─ LINEBOT_INTERNAL_GRPC_ADDR
+├─ LINEBOT_INTERNAL_APP_ID
+├─ LINEBOT_INTERNAL_BUILDER_ID
+├─ LINEBOT_GOOGLE_CALENDAR_ENABLED
+├─ LINEBOT_GOOGLE_CALENDAR_ID
+├─ LINEBOT_GOOGLE_CALENDAR_TIME_ZONE
+├─ LINEBOT_GOOGLE_OAUTH_CREDENTIALS_FILE
+├─ LINEBOT_GOOGLE_OAUTH_TOKEN_FILE
 ├─ LINEBOT_LINE_CHANNEL_SECRET
-│  └─ for signature verification
-└─ LINEBOT_LINE_CHANNEL_ACCESS_TOKEN
-   └─ for reply message (future)
+├─ LINEBOT_LINE_CHANNEL_ACCESS_TOKEN
+└─ LINEBOT_LINE_BOT_USER_ID
 ```
 
-## Future Extension Shape
+Removed from target design:
 
 ```text
-internal/
-├─ task
-│  └─ router / factory can be extracted when second feature lands
-├─ calendar
-└─ new_feature
-   ├─ usecase.go
-   ├─ service.go
-   ├─ repository.go optional
-   └─ model.go
+removed
+└─ all Firestore-related config and persistence flow
 ```
-
-`task` remains the dispatch layer. Feature modules own their own usecase / service / repository.

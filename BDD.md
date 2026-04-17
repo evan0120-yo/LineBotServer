@@ -2,234 +2,239 @@
 
 ## Purpose
 
-這份文件只定義「對外可觀察行為」與「驗收條件」。
+這份文件只定義對外可觀察行為與驗收條件。
 
 ```text
 BDD scope
-├─ request input
+├─ input / request
 ├─ observable side effect
-├─ response / error
+├─ LINE reply / API output
 └─ what must not happen
 ```
 
-不在這份文件裡處理：
+這份文件不處理：
 - package 怎麼切
-- function / call chain
-- 未來 module 設計
-- 目前 code 細節導覽
+- function call chain
+- 目前 code 實作細節
+- 未來 roadmap 敘事
 
 ## Scope
 
-目前驗收範圍包含已落地能力：
+這份 BDD 反映目前已確認的目標行為：
 
 ```text
-current scope
-├─ POST /api/tasks (REST API)
-├─ POST /api/line/webhook (LINE Bot)
+target scope
+├─ REST local test entry
+│  └─ POST /api/tasks
+├─ LINE webhook entry
+│  └─ POST /api/line/webhook
 ├─ Internal LineTaskConsult extraction
-├─ Firestore calendar_tasks create
-└─ optional Google Calendar create sync
+├─ Google Calendar as only persistence source
+└─ operation factory
+   ├─ create
+   ├─ query
+   ├─ delete
+   └─ update
 ```
 
-## Scenario Group: Request Boundary
+## Shared Output Rule
 
-### Scenario: text is missing
+### Scenario: single event reply format
 
-Given local tester 呼叫 `POST /api/tasks`  
-And request body 未帶 `text` 或 `text` 只有空白  
-When LineBot Backend 處理 request  
-Then 不應呼叫 Internal gRPC  
-And response 應回 `TEXT_REQUIRED`
-
-### Scenario: request can override referenceTime and timeZone
-
-Given local tester 呼叫 `POST /api/tasks`  
-And request body 帶入 `referenceTime` 與 `timeZone`  
-When LineBot Backend 呼叫 Internal `LineTaskConsult`  
-Then request 應將這兩個欄位原樣傳給 Internal
-
-## Scenario Group: Calendar Create
-
-### Scenario: create calendar task from natural language
-
-Given local tester 呼叫 `POST /api/tasks`  
-And request body 帶入 `text="小傑約明天吃午餐"`  
-And LineBot Backend config 已設定 Internal `appId`、`builderId`、`supportedTaskTypes=["calendar"]`  
-When Internal 回傳 `taskType="calendar"`、`operation="create"`、`summary`、`startAt`、`endAt`  
-Then LineBot Backend 應建立 `calendar_tasks/{taskId}`  
-And response 應回傳 `taskId` 與 extraction result
+Given LineBot Backend 要回傳單一筆 calendar 結果  
+When create / query(one result) / update 成功  
+Then reply 文字格式必須固定為三行
 
 ```text
-observable result
-POST /api/tasks
-├─ response 200
-└─ Firestore calendar_tasks/{taskId}
+0001
+小傑約明天吃晚餐
+2026-04-18 12:00 (週五) ~ 2026-04-18 12:30 (週五)
 ```
 
-### Scenario: location is missing but task is still created
+And 第一行必須直接是 `eventId`  
+And 不得出現 `eventId:` 這種前綴  
+And 時間必須格式化成：
 
-Given Internal 回傳 `taskType="calendar"`  
-And `operation="create"`  
+```text
+yyyy-MM-dd HH:mm (週X) ~ yyyy-MM-dd HH:mm (週X)
+```
+
+### Scenario: multiple event reply format
+
+Given query 回傳多筆事件  
+When LineBot Backend 組 LINE reply  
+Then 每筆事件必須各自用三行格式表示  
+And 多筆事件之間可以用空行分隔  
+And 每筆都必須直接顯示 `eventId`
+
+### Scenario: no data reply
+
+Given query 沒查到任何事件  
+When LineBot Backend 組 reply  
+Then reply 必須是 `沒資料`
+
+### Scenario: error reply
+
+Given create / query / delete / update 任一路徑失敗  
+When LineBot Backend 組 reply  
+Then reply 必須回精簡錯誤訊息  
+And 不得把完整 log 或 stack trace 丟到 LINE
+
+## Create
+
+### Scenario: create event from natural language
+
+Given local tester 呼叫 `POST /api/tasks`  
+Or LINE webhook 收到有 mention bot 的文字訊息  
+When Internal 回傳：
+- `taskType="calendar"`
+- `operation="create"`
+- `summary`
+- `startAt`
+- `endAt`
+Then LineBot Backend 應呼叫 Google Calendar create  
+And 應使用 Google Calendar 回傳的 `eventId` 組 reply  
+And reply 必須符合三行格式
+
+### Scenario: create allows empty location
+
+Given Internal 回傳 `operation="create"`  
 And `summary`、`startAt`、`endAt` 皆存在  
 And `location=""`  
-And `missingFields=["location"]`  
-When LineBot Backend 處理此 extraction result  
-Then LineBot Backend 應照常寫入 Firestore  
-And response 應成功回傳  
-And 不應因 `location` 缺失回錯
+When LineBot Backend 建立 Google Calendar event  
+Then 應照常建立成功  
+And 不應因 `location` 空值失敗
 
-### Scenario: required extraction field is missing
+### Scenario: create rejects missing required fields
 
-Given Internal 回傳 `taskType="calendar"`  
-And `operation="create"`  
+Given Internal 回傳 `operation="create"`  
 And `summary` 或 `startAt` 或 `endAt` 缺失  
-When LineBot Backend 處理 extraction result  
-Then LineBot Backend 不應寫入 Firestore  
-And 不應呼叫 Google Calendar API  
-And response 應回 `INTERNAL_EXTRACTION_INCOMPLETE`  
-And error 應包含對應的 `missingFields`
+When LineBot Backend 處理 create  
+Then 不應呼叫 Google Calendar create  
+And reply 應回精簡錯誤  
+And 不應產生任何 event
 
-## Scenario Group: Google Calendar Sync
+## Query
 
-這組場景只驗收 create sync 的對外結果。
+### Scenario: query uses time range only
+
+Given Internal 回傳 `operation="query"`  
+And 帶有 `queryStartAt` 與 `queryEndAt`  
+When LineBot Backend 查詢 Google Calendar  
+Then 查詢主條件只應使用時間區間  
+And 不應使用 title / summary keyword 做主查詢條件
+
+### Scenario: query returns overlapping events
+
+Given Google Calendar 有一筆事件：
 
 ```text
-Google Calendar sync boundary
-├─ Firestore 永遠先保存 task
-├─ Google Calendar 是外部同步目標
-└─ Firestore task 不會因 sync failure 消失
+12:00 ~ 15:00
 ```
 
-### Scenario: create task and sync to shared Google Calendar
+When query 區間為以下任一種：
 
-Given Internal 回傳 `taskType="calendar"`  
-And `operation="create"`  
-And `summary`、`startAt`、`endAt` 皆存在  
-And Google Calendar sync is enabled  
-And OAuth token 可寫入 configured shared calendar  
-When LineBot Backend 建立 calendar task  
-Then LineBot Backend 應先寫入 `calendar_tasks/{taskId}`  
-And 應呼叫 Google Calendar API 建立 event  
-And Firestore 應保存 `googleCalendarEventId`、`googleCalendarHtmlLink`、`calendarSyncStatus="calendar_synced"`  
-And response 應回傳 calendar sync result
+```text
+12:00 ~ 12:30
+14:30 ~ 15:30
+11:30 ~ 12:00
+```
 
-### Scenario: Google Calendar sync fails after Firestore create
+Then 該事件都必須出現在查詢結果內
 
-Given Internal extraction result is valid  
-And Firestore create succeeds  
-And Google Calendar API returns an error  
-When LineBot Backend handles the task  
-Then Firestore 應保留已建立的 task  
-And task `calendarSyncStatus` 應更新為 `calendar_sync_failed`  
-And task 應保存 `calendarSyncError`  
-And response 應清楚告知 sync failed  
-And 不應遺失 Internal extraction result
+### Scenario: query overlap rule
 
-### Scenario: Google Calendar sync disabled
+Given query 不是查完全落入區間的事件  
+When LineBot Backend 過濾 query 結果  
+Then overlap 規則必須是：
 
-Given Google Calendar sync is disabled by config  
-When LineBot Backend 建立 calendar task  
-Then LineBot Backend 只應寫入 Firestore  
-And 不應呼叫 Google Calendar API  
-And task `calendarSyncStatus` 應保持 `not_enabled`
+```text
+eventStart <= queryEnd
+AND
+eventEnd >= queryStart
+```
 
-## Scenario Group: Unsupported Behavior
+### Scenario: query returns eventId
+
+Given query 查到一筆或多筆事件  
+When LineBot Backend 組 reply  
+Then 每筆結果都必須帶出 Google Calendar 的 `eventId`  
+And `eventId` 必須直接顯示在第一行  
+And 使用者可以直接複製該 `eventId`
+
+## Delete
+
+### Scenario: delete by eventId
+
+Given Internal 回傳 `operation="delete"`  
+And 回傳 `eventId="0001"`  
+When LineBot Backend 執行 delete  
+Then 應直接呼叫 Google Calendar delete by `eventId`  
+And reply 應只回成功或失敗
+
+### Scenario: delete does not need title or time range
+
+Given delete request 已有 `eventId`  
+When LineBot Backend 執行 delete  
+Then 不應再依 title 搜尋  
+And 不應再依時間範圍搜尋
+
+## Update
+
+### Scenario: update title by eventId
+
+Given Internal 回傳 `operation="update"`  
+And 回傳 `eventId="0001"`  
+And 回傳新的 `summary`  
+When LineBot Backend 執行 update  
+Then 應直接呼叫 Google Calendar update 該 `eventId`  
+And 只更新 title  
+And reply 應回更新後的三行結果
+
+### Scenario: update does not change time when title-only update
+
+Given update request 只帶 `eventId` 與新 `summary`  
+When LineBot Backend 執行 update  
+Then 不應修改該事件原本的開始與結束時間
+
+## LINE Webhook
+
+### Scenario: message without mention is ignored
+
+Given LINE webhook 收到文字訊息  
+And 訊息沒有 mention bot  
+When LineBot Backend 處理 webhook  
+Then 不應呼叫 Internal  
+And 不應呼叫 Google Calendar  
+And 不應回任務結果
+
+### Scenario: message with mention uses same task usecase as REST
+
+Given LINE webhook 收到有 mention bot 的文字訊息  
+When LineBot Backend 處理 webhook  
+Then 應先移除 mention 文字  
+And 之後必須走和 REST 相同的 task usecase 邏輯
+
+### Scenario: invalid signature is rejected
+
+Given LINE webhook request 的 signature 不正確  
+When LineBot Backend 驗證 webhook  
+Then 應直接拒絕  
+And 不應呼叫 Internal  
+And 不應呼叫 Google Calendar
+
+## Unsupported Behavior
 
 ### Scenario: unsupported taskType
 
 Given Internal 回傳 `taskType="unknown"`  
-When LineBot Backend 處理此 extraction result  
-Then LineBot Backend 不應寫入 Firestore  
-And response 應回 `TASK_TYPE_UNSUPPORTED`
+When LineBot Backend 處理該結果  
+Then 不應執行任何 Calendar 操作  
+And reply 應回精簡錯誤
 
-### Scenario: unsupported operation in first version
+### Scenario: unsupported operation
 
-Given Internal 回傳 `taskType="calendar"`
-And `operation="update"`
-When LineBot Backend 處理此 extraction result
-Then LineBot Backend 不應寫入 Firestore
-And response 應回 `OPERATION_UNSUPPORTED`
-
-## Scenario Group: LINE Webhook
-
-這組場景驗收 LINE Bot webhook 整合。
-
-```text
-LINE webhook boundary
-├─ POST /api/line/webhook
-├─ 驗證 LINE signature
-├─ 解析 LINE webhook events
-├─ 過濾 message event
-├─ 檢查 mention (tag bot)
-└─ 共用 task usecase (與 REST API 相同流程)
-```
-
-### Scenario: LINE message without mention is ignored
-
-Given LINE webhook 收到 message event
-And message text = "明天吃午餐"
-And message 沒有 mention bot
-When LineBot Backend 處理 webhook
-Then 不應呼叫 task usecase
-And 不應呼叫 Internal gRPC
-And 不應建立 Firestore task
-
-### Scenario: LINE message with mention creates task
-
-Given LINE webhook 收到 message event
-And message text = "@bot 小傑約明天吃午餐"
-And message 有 mention bot
-When LineBot Backend 處理 webhook
-Then 應移除 mention 文字
-And 應呼叫 task usecase with text = "小傑約明天吃午餐"
-And 應建立 `calendar_tasks/{taskId}` with `source="line"`
-And 不應因為 mention 影響 extraction 結果
-
-### Scenario: LINE webhook signature verification fails
-
-Given LINE webhook 收到 request
-And `x-line-signature` header 不正確
-When LineBot Backend 驗證 signature
-Then 不應處理 request body
-And 不應呼叫 task usecase
-And response 應回 401 或 403
-
-### Scenario: LINE webhook with non-message event
-
-Given LINE webhook 收到 event
-And event type = "follow" 或 "unfollow" 或其他非 message event
-When LineBot Backend 處理 webhook
-Then 不應呼叫 task usecase
-And 不應建立 Firestore task
-
-### Scenario: LINE message with mention in group chat
-
-Given LINE webhook 收到 message event
-And source type = "group"
-And message text = "@bot 提醒我明天開會"
-And message 有 mention bot
-When LineBot Backend 處理 webhook
-Then 應移除 mention 文字
-And 應呼叫 task usecase
-And 應建立 task with `source="line"`
-
-### Scenario: LINE webhook with multiple valid message events
-
-Given LINE webhook 一次收到多個 message event
-And 至少一筆 event mention bot 且可成功建立 task
-When LineBot Backend 處理 webhook
-Then 應逐筆處理可用的 message event
-And 不應因為其中一筆 event 失敗而中止整個 webhook
-And webhook response 應回 200 ack，避免整包 request 被 LINE 重送
-
-### Scenario: LINE message without mention in private chat
-
-Given LINE webhook 收到 message event
-And source type = "user" (私聊)
-And message text = "小傑約明天吃午餐"
-And message 沒有 mention bot
-When LineBot Backend 處理 webhook
-Then 第一版應忽略此訊息 (需要 mention 才處理)
-And 不應呼叫 task usecase
-
-> 注意：第一版統一要求 mention，避免在私聊時誤觸發。未來可放寬為「群組需要 mention，私聊不需要」。
+Given Internal 回傳 `operation="unknown"`  
+When LineBot Backend 處理該結果  
+Then 不應執行任何 Calendar 操作  
+And reply 應回精簡錯誤

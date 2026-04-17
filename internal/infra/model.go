@@ -2,45 +2,7 @@ package infra
 
 import (
 	"context"
-	"time"
 )
-
-// CalendarTaskDoc represents a calendar task document in Firestore.
-type CalendarTaskDoc struct {
-	TaskID                 string     `firestore:"taskId"`
-	Source                 string     `firestore:"source"`
-	RawText                string     `firestore:"rawText"`
-	TaskType               string     `firestore:"taskType"`
-	Operation              string     `firestore:"operation"`
-	Summary                string     `firestore:"summary"`
-	StartAt                string     `firestore:"startAt"`
-	EndAt                  string     `firestore:"endAt"`
-	Location               string     `firestore:"location"`
-	MissingFields          []string   `firestore:"missingFields"`
-	Status                 string     `firestore:"status"`
-	CalendarSyncStatus     string     `firestore:"calendarSyncStatus"`
-	GoogleCalendarID       string     `firestore:"googleCalendarId"`
-	GoogleCalendarEventID  string     `firestore:"googleCalendarEventId"`
-	GoogleCalendarHTMLLink string     `firestore:"googleCalendarHtmlLink"`
-	CalendarSyncError      string     `firestore:"calendarSyncError"`
-	CalendarSyncedAt       *time.Time `firestore:"calendarSyncedAt,omitempty"`
-	InternalAppID          string     `firestore:"internalAppId"`
-	InternalBuilderID      int        `firestore:"internalBuilderId"`
-	InternalRequest        string     `firestore:"internalRequest"`
-	InternalResponse       string     `firestore:"internalResponse"`
-	CreatedAt              time.Time  `firestore:"createdAt"`
-	UpdatedAt              time.Time  `firestore:"updatedAt"`
-}
-
-// CalendarTaskSyncResult represents Google Calendar sync metadata persisted to Firestore.
-type CalendarTaskSyncResult struct {
-	CalendarSyncStatus     string
-	GoogleCalendarID       string
-	GoogleCalendarEventID  string
-	GoogleCalendarHTMLLink string
-	CalendarSyncError      string
-	CalendarSyncedAt       *time.Time
-}
 
 // GoogleCalendarCreateEventCommand holds fields needed to create a Google Calendar event.
 type GoogleCalendarCreateEventCommand struct {
@@ -52,14 +14,54 @@ type GoogleCalendarCreateEventCommand struct {
 	Location   string
 }
 
-// GoogleCalendarEventResult holds the created Google Calendar event metadata.
+// GoogleCalendarListEventsCommand holds fields needed to query Google Calendar events.
+type GoogleCalendarListEventsCommand struct {
+	CalendarID   string
+	QueryStartAt string
+	QueryEndAt   string
+	TimeZone     string
+}
+
+// GoogleCalendarDeleteEventCommand holds fields needed to delete a Google Calendar event.
+type GoogleCalendarDeleteEventCommand struct {
+	CalendarID string
+	EventID    string
+}
+
+// GoogleCalendarUpdateEventCommand holds fields needed to update a Google Calendar event.
+type GoogleCalendarUpdateEventCommand struct {
+	CalendarID string
+	EventID    string
+	Summary    string
+	TimeZone   string
+}
+
+// GoogleCalendarEventResult holds Google Calendar event metadata.
 type GoogleCalendarEventResult struct {
 	CalendarID string
 	EventID    string
+	Summary    string
+	StartAt    string
+	EndAt      string
+	Location   string
 	HTMLLink   string
 }
 
-// GoogleCalendarProvider creates events in an external Google Calendar.
+// GoogleCalendarProvider performs CRUD-like operations against Google Calendar.
 type GoogleCalendarProvider interface {
 	CreateEvent(ctx context.Context, command GoogleCalendarCreateEventCommand) (GoogleCalendarEventResult, error)
+	ListEvents(ctx context.Context, command GoogleCalendarListEventsCommand) ([]GoogleCalendarEventResult, error)
+	DeleteEvent(ctx context.Context, command GoogleCalendarDeleteEventCommand) error
+	UpdateEventSummary(ctx context.Context, command GoogleCalendarUpdateEventCommand) (GoogleCalendarEventResult, error)
+}
+
+// LineReplyCommand holds fields needed to send a LINE reply message.
+type LineReplyCommand struct {
+	ReplyToken string
+	Text       string
+}
+
+// LineReplyProvider sends LINE reply messages.
+type LineReplyProvider interface {
+	ReplyText(ctx context.Context, command LineReplyCommand) error
 }

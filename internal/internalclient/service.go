@@ -3,6 +3,7 @@ package internalclient
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -42,6 +43,7 @@ func (s *Service) Close() error {
 
 // LineTaskConsult calls Internal AI Copilot LineTaskConsult gRPC endpoint.
 func (s *Service) LineTaskConsult(ctx context.Context, command LineTaskConsultCommand) (LineTaskConsultResult, error) {
+	log.Printf("[INFO] internal grpc line-task request: appID=%s builderID=%d messageText=%q referenceTime=%q timeZone=%q supportedTaskTypes=%v clientIP=%q", command.AppID, command.BuilderID, command.MessageText, command.ReferenceTime, command.TimeZone, command.SupportedTaskTypes, command.ClientIP)
 	request := &grpcpb.LineTaskConsultRequest{
 		AppId:              command.AppID,
 		BuilderId:          int32(command.BuilderID),
@@ -54,18 +56,23 @@ func (s *Service) LineTaskConsult(ctx context.Context, command LineTaskConsultCo
 
 	response, err := s.client.LineTaskConsult(ctx, request)
 	if err != nil {
+		log.Printf("[INFO] internal grpc line-task failed: err=%v", err)
 		return LineTaskConsultResult{}, infra.NewInternalGRPCError(err)
 	}
 
 	result := LineTaskConsultResult{
 		TaskType:      response.TaskType,
 		Operation:     response.Operation,
+		EventID:       response.EventId,
 		Summary:       response.Summary,
 		StartAt:       response.StartAt,
 		EndAt:         response.EndAt,
+		QueryStartAt:  response.QueryStartAt,
+		QueryEndAt:    response.QueryEndAt,
 		Location:      response.Location,
 		MissingFields: response.MissingFields,
 	}
 
+	log.Printf("[INFO] internal grpc line-task response: taskType=%s operation=%s eventID=%q summary=%q startAt=%q endAt=%q queryStartAt=%q queryEndAt=%q missingFields=%v", result.TaskType, result.Operation, result.EventID, result.Summary, result.StartAt, result.EndAt, result.QueryStartAt, result.QueryEndAt, result.MissingFields)
 	return result, nil
 }

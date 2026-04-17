@@ -1,175 +1,144 @@
 # LineBot Backend Development Guide
 
 ## Purpose
-這個專案是獨立的 LineBot Backend，不屬於 LinkChat，也不承擔 LinkChat 的任何業務邏輯。
+
+這個專案是獨立的 LineBot Backend，不屬於 LinkChat，也不承擔 LinkChat 的任何產品邏輯。
 
 核心責任：
 
 ```text
 LineBot Backend
-├─ 接收任務文字
+├─ 接收 REST / LINE 訊息入口
 ├─ 呼叫 Internal AI Copilot gRPC LineTaskConsult
-├─ 傳入 supported task types
-├─ 驗證 Internal 回傳的任務抽取結果
-├─ 依 taskType 分派到功能 module
-├─ 將任務資料寫入 Firestore
-├─ 從 LINE webhook 接收 mention message
-└─ optional Google Calendar create sync
+├─ 依 operation 分派 calendar 行為
+├─ 呼叫 Google Calendar
+└─ 組成 LINE / REST 可直接使用的結果
 ```
 
-Internal AI Copilot 是 AI 溝通與自然語句解析的唯一來源。LineBot Backend 不自行建立另一套 AI pipeline。
+Internal 是唯一的 AI 理解來源。LineBot Backend 不在本地重做 builder / prompt / Gemma 判斷。
 
 ## Project Boundary
 
 ```text
 In scope
-├─ REST API 測試入口
-├─ LINE webhook handler
+├─ REST local test entry
+├─ LINE webhook entry
 ├─ Internal gRPC client
-├─ Firestore task persistence
-├─ Calendar task usecase orchestration
-└─ optional Google Calendar shared calendar sync
+├─ calendar create/query/delete/update
+├─ LINE reply formatting
+└─ Google Calendar integration
 
 Out of scope
 ├─ LinkChat
-├─ Internal AI prompt / Gemma 邏輯
-├─ Google Calendar update / delete / query
-└─ 任務文字的本地 AI 判斷
+├─ Internal prompt / builder / aiclient implementation
+├─ Firestore persistence
+└─ 本地 AI 判斷
 ```
-
-規則：
-- 不碰 LinkChat 專案。
-- 不在本專案重做 Internal 的 builder / aiclient / prompt 邏輯。
-- Google Calendar 串接採方案 C：OAuth user token 寫入使用者與伴侶共用的 Google Calendar。
 
 ## Architecture
 
-本專案採三層加 UseCase 層：
+本專案維持三層加 UseCase 層，但現在外部系統只剩 Google Calendar。
 
 ```text
 Handler
 └─ UseCase
    └─ Service
-      └─ Repository
+      └─ External adapter
 ```
 
 ### Layer Responsibility
 
 ```text
-Layer 1: Handler
-├─ REST handler
-├─ LINE webhook handler
+Handler
+├─ REST / LINE transport
 ├─ request parse
-├─ response mapping
-└─ 不做業務流程與 Firestore 存取
+├─ signature verify
+├─ mention cleanup
+└─ response mapping
 
-Layer 2: UseCase
-├─ 單一業務案例的流程編排
-├─ 呼叫 Internal gRPC client
-├─ 呼叫 service 做 validation / normalize
-├─ 呼叫 repository 寫入 Firestore
-└─ 不處理 HTTP / LINE transport 細節
+UseCase
+├─ 單一業務案例編排
+├─ 呼叫 Internal gRPC
+├─ operation dispatch
+└─ 呼叫 calendar module
 
-Layer 3: Service
+Service
 ├─ deterministic business rules
-├─ 驗證 Internal extraction 是否完整
-├─ 判斷哪些欄位可缺、哪些欄位不可缺
-└─ 不直接呼叫 Firestore 或 transport
+├─ required field validation
+├─ overlap filter
+└─ reply formatting rule
 
-Layer 4: Repository
-├─ Firestore read / write / query
-├─ persistence mapping
-└─ 不做業務判斷
+External adapter
+└─ Google Calendar API interaction
 ```
 
-## Dependency Direction
-
-```text
-cmd/api
-└─ app
-   ├─ gatekeeper
-   │  └─ task
-   │     ├─ internalclient
-   │     └─ calendar
-   │        └─ infra
-   └─ infra
-```
-
-禁止方向：
-- Handler 不直接呼叫 Repository。
-- Repository 不依賴 UseCase / Service。
-- Service 不依賴 HTTP / LINE / gRPC transport model。
-- LineBot webhook handler 與 REST handler 不各自複製任務流程，兩者必須共用 task UseCase。
-- calendar 不反向依賴 task。
-- internalclient 不理解 calendar 業務。
-
-## Package Baseline
-
-第一版 package 採 Internal Go 的 module-first 風格，不使用 `internal/usecase`、`internal/service`、`internal/repository` 這種技術層大 package。
+## Module Baseline
 
 ```text
 Backend/
-├─ cmd/api/
-│  └─ doc.go
-├─ internal/
-│  ├─ app/
-│  │  └─ doc.go
-│  ├─ gatekeeper/
-│  │  └─ doc.go
-│  ├─ task/
-│  │  └─ doc.go
-│  ├─ calendar/
-│  │  └─ doc.go
-│  ├─ internalclient/
-│  │  └─ doc.go
-│  └─ infra/
-│     └─ doc.go
-└─ go.mod
+├─ cmd/api
+└─ internal
+   ├─ app
+   ├─ gatekeeper
+   ├─ task
+   ├─ calendar
+   ├─ internalclient
+   └─ infra
 ```
 
-補充：
-- `gatekeeper` 是 REST / LINE webhook 的入口邊界。
-- `task` 是 AI task orchestration、supported task type registry 與分派位置。
-- `calendar` 是目前第一個功能 module，擁有自己的 usecase / service / repository。
-- `internalclient` 只負責 Internal AI Copilot gRPC integration。
-- 未來新增功能時，新增同層 module，再由 `task` 分派。
-
-## First Version Flow
+### Responsibility Split
 
 ```text
-Postman
-└─ POST /api/tasks
-   ├─ text
-   ├─ referenceTime optional
-   └─ timeZone optional
-      │
-      ▼
-gatekeeper.Handler
-└─ parse request
-   │
-   ▼
-gatekeeper.UseCase
-└─ task.UseCase
-   ├─ 呼叫 internalclient.Service.LineTaskConsult
-   ├─ 傳入 supportedTaskTypes=["calendar"]
-   ├─ 檢查 taskType 是否支援
-   ├─ 檢查 operation 是否支援
-   └─ calendar.UseCase.Create
-      ├─ calendar.Service.ValidateCreate
-      │  ├─ summary required
-      │  ├─ startAt required
-      │  ├─ endAt required
-      │  └─ location optional
-      └─ calendar.Repository.Create
-         └─ Firestore calendar_tasks
+gatekeeper
+├─ REST handler
+├─ LINE webhook handler
+└─ shared request boundary
+
+task
+├─ supportedTaskTypes registry
+├─ Internal request build
+├─ operation validation
+└─ operation factory dispatch
+
+calendar
+├─ create
+├─ query
+├─ delete
+├─ update
+└─ formatter
+
+internalclient
+└─ Internal AI Copilot gRPC transport wrapper
+
+infra
+├─ config
+├─ errors
+├─ HTTP envelope
+└─ Google Calendar client
 ```
 
-## Internal gRPC Rule
-
-LineBot Backend 呼叫 Internal 的正式路徑是 gRPC：
+## First Design Flow
 
 ```text
-Internal IntegrationService.LineTaskConsult
+REST or LINE
+└─ gatekeeper
+   └─ task.UseCase.ExecuteFromText
+      ├─ call Internal LineTaskConsult
+      ├─ validate taskType=calendar
+      ├─ validate operation
+      └─ calendar operation factory
+         ├─ create
+         ├─ query
+         ├─ delete
+         └─ update
+```
+
+## Internal Contract Rule
+
+LineBot Backend 呼叫 Internal 的核心 request 不變：
+
+```text
+LineTaskConsult
 ├─ appId
 ├─ builderId
 ├─ messageText
@@ -179,226 +148,191 @@ Internal IntegrationService.LineTaskConsult
 └─ clientIp
 ```
 
-規則：
-- `appId` 與 `builderId` 由 LineBot Backend config 固定管理。
-- 第一版 REST request 不要求使用者傳 `appId` / `builderId`。
-- `messageText` 使用 REST body 的 `text`。
-- `referenceTime` / `timeZone` 可由 request 覆蓋；未提供時由 LineBot Backend 或 Internal 補值。
-- `supportedTaskTypes` 由 LineBot Backend task registry 產生；第一版固定為 `["calendar"]`。
-- Internal response 必須回 `taskType`，供 task module 分派。
-- Internal 回傳是任務抽取結果，本專案只做保存與後續外部整合。
-
-## Task Type Registry Rule
-
-Go 中以 string alias + const 表達 Java enum 類似語意。
-
-```go
-type TaskType string
-
-const (
-	TaskTypeCalendar TaskType = "calendar"
-)
-```
-
-規則：
-- registry 第一版只有 `calendar`。
-- LineBot Backend 傳 `supportedTaskTypes` 給 Internal。
-- Internal 從 `supportedTaskTypes` 中選出 `taskType` 回傳。
-- `task` module 依 `taskType` 決定要呼叫哪個 feature module。
-
-## Task Extraction Validation Rule
-
-Internal 已負責讓 Gemma 將自然語句解析成結構化時間資料。本專案不自行補時間。
+回傳 contract 需要補：
 
 ```text
-required
+Internal structured result
 ├─ taskType
 ├─ operation
+├─ eventId
 ├─ summary
 ├─ startAt
-└─ endAt
-
-optional
+├─ endAt
+├─ queryStartAt
+├─ queryEndAt
 ├─ location
 └─ missingFields
 ```
 
-規則：
-- `taskType` 不支援：不寫 Firestore，回錯。
-- `summary` 空值：不寫 Firestore，回錯。
-- `startAt` 空值：不寫 Firestore，回錯，視為 Internal extraction incomplete。
-- `endAt` 空值：不寫 Firestore，回錯，視為 Internal extraction incomplete。
-- `location` 空值：照常寫入，不回錯。
-- `missingFields` 包含 `location` 不影響 create。
+Rules:
+- `eventId` 必須成為 prompt return 欄位之一。
+- `create` 時可為空字串，後續以 Google Calendar create 結果覆蓋。
+- `delete` / `update` 必須靠 `eventId` 執行。
+- `query` 靠 `queryStartAt` / `queryEndAt`。
 
-## Firestore Rule
+## Operation Rule
 
-第一版只做新增。
-
-建議 collection：
+### Create
 
 ```text
-calendar_tasks/{taskId}
-├─ taskId
-├─ source
-├─ rawText
-├─ taskType
-├─ operation
+create
+├─ validate summary/startAt/endAt
+├─ call Google Calendar create
+└─ format reply using returned eventId
+```
+
+### Query
+
+```text
+query
+├─ use time range only
+├─ fetch candidate events from Google Calendar
+├─ apply overlap rule
+└─ return 0..N formatted event rows
+```
+
+### Delete
+
+```text
+delete
+├─ require eventId
+└─ call Google Calendar delete directly
+```
+
+### Update
+
+```text
+update
+├─ require eventId
+├─ require new summary
+└─ call Google Calendar update title only
+```
+
+## Query Rule
+
+query 主條件只用時間範圍，不用 title 搜尋。
+
+```text
+query input
+├─ queryStartAt
+└─ queryEndAt
+```
+
+overlap 規則固定：
+
+```text
+eventStart <= queryEnd
+AND
+eventEnd >= queryStart
+```
+
+## LINE Reply Rule
+
+固定格式：
+
+```text
+0001
+小傑約明天吃晚餐
+2026-04-18 12:00 (週五) ~ 2026-04-18 12:30 (週五)
+```
+
+Rules:
+- 第一行直接是 `eventId`
+- 不加 `eventId:` 前綴
+- 沒資料回 `沒資料`
+- 錯誤回精簡錯誤
+- 不把整個 log 回給使用者
+
+## Removed Rule
+
+這次設計的明確方向：
+
+```text
+removed
+├─ Firestore collection
+├─ Firestore repository
+├─ Firestore sync status
+└─ Firestore as source of truth
+```
+
+也就是：
+
+```text
+Calendar
+└─ becomes the only data source for
+   ├─ create result
+   ├─ query result
+   ├─ delete target
+   └─ update target
+```
+
+## Google Calendar Rule
+
+LineBot Backend 直接以 Google Calendar 當唯一外部資料來源。
+
+```text
+Google Calendar
+├─ create -> events.insert
+├─ query  -> events.list + overlap filter
+├─ delete -> events.delete
+└─ update -> events.patch / update title
+```
+
+需要的最小資訊：
+
+```text
+create
 ├─ summary
 ├─ startAt
-├─ endAt
-├─ location
-├─ missingFields
-├─ status
-├─ calendarSyncStatus
-├─ googleCalendarId
-├─ googleCalendarEventId
-├─ googleCalendarHtmlLink
-├─ calendarSyncError
-├─ calendarSyncedAt
-├─ internalAppId
-├─ internalBuilderId
-├─ internalRequest
-├─ internalResponse
-├─ createdAt
-└─ updatedAt
+└─ endAt
+
+query
+├─ queryStartAt
+└─ queryEndAt
+
+delete
+└─ eventId
+
+update
+├─ eventId
+└─ summary
 ```
 
-規則：
-- `startAt` / `endAt` 應拆欄存，不存單一區間字串。
-- `rawText` 必須保存，方便追蹤 Internal extraction 問題。
-- `internalResponse` 可保存第一版完整回應，方便 debug。
-- 後續 update / delete / query 需要時，再補查詢欄位與索引設計。
+## Testing Direction
 
-## Google Calendar Shared Calendar Rule
-
-Google Calendar 串接採方案 C。
+先補：
 
 ```text
-方案 C
-├─ 使用一個 shared Google Calendar
-├─ 使用者與伴侶都訂閱 / 共用該 calendar
-├─ LineBot Backend 透過 OAuth user consent 取得 refresh token
-├─ server 寫入 configured shared calendar id
-└─ Pixel / Google Calendar app 由 Google 帳號同步事件
+1. task operation dispatch
+2. query overlap rule
+3. line reply formatter
+4. LINE webhook boundary
 ```
 
-架構規則：
-- Firestore 是 task source of truth。
-- Google Calendar 是外部同步目標。
-- calendar usecase 依賴 `infra.GoogleCalendarProvider` interface。
-- Google SDK / OAuth token loading 放在 infra。
-- Google Calendar sync 失敗時，不應刪除已建立的 Firestore task。
+再補：
 
 ```text
-calendar.UseCase.Create
-├─ ValidateCreate
-├─ Repository.Create
-├─ sync enabled?
-│  ├─ no  -> return Firestore-only result
-│  └─ yes -> infra.GoogleCalendarProvider.CreateEvent
-│
-├─ provider success
-│  └─ Repository.UpdateSyncResult(calendar_synced)
-└─ provider failure
-   └─ Repository.UpdateSyncResult(calendar_sync_failed)
+5. Google Calendar create/query/delete/update integration
 ```
 
-建議 sync status：
+## Documentation Rule
+
+本專案文件角色分工：
 
 ```text
-calendarSyncStatus
-├─ not_enabled
-├─ calendar_sync_pending
-├─ calendar_synced
-└─ calendar_sync_failed
+BDD
+└─ 對外可觀察行為與驗收
+
+SDD
+└─ 模組邊界 / flow / contract / ownership
+
+TDD
+└─ 測試策略與測項規劃
+
+CODE_REVIEW
+└─ 目前 code 真相
 ```
 
-建議 env：
-
-```text
-LINEBOT_GOOGLE_CALENDAR_ENABLED=true
-LINEBOT_GOOGLE_CALENDAR_ID=<shared-calendar-id>
-LINEBOT_GOOGLE_CALENDAR_TIME_ZONE=Asia/Taipei
-LINEBOT_GOOGLE_OAUTH_CREDENTIALS_FILE=<client-secret-json-path>
-LINEBOT_GOOGLE_OAUTH_TOKEN_FILE=<stored-token-json-path>
-```
-
-安全規則：
-- OAuth credentials / token 不可 commit。
-- token 應放在本機或部署環境的 secret path。
-- shared calendar id 必須可被該 OAuth user 寫入。
-
-## LINE Webhook Rule
-
-LINE webhook 使用 tag bot 作為觸發門檻，不使用固定前綴。
-
-```text
-LINE message event
-├─ 沒有 tag bot
-│  └─ ignore
-└─ 有 tag bot
-   ├─ 移除 mention
-   ├─ 取得 message text
-   └─ 呼叫同一個 Task UseCase
-```
-
-規則：
-- tag bot 只負責聊天室噪音閘門，不是業務指令。
-- 是否為任務內容交給 Internal + Gemma 判斷。
-- LINE webhook handler 不複製 REST handler 的業務流程。
-- webhook 在 signature 與 JSON 驗證通過後，會以 200 ack 整包 request。
-- event 級別業務錯誤不回給 LINE，避免 webhook 重送整包 payload。
-
-## Future Operation Rule
-
-Google Calendar create sync 已完成；後續再擴充 update / delete / query。
-
-```text
-create -> Google Calendar events.insert
-update -> Google Calendar events.patch
-delete -> Google Calendar events.delete
-query  -> Firestore / Google Calendar list strategy 待定
-```
-
-規則：
-- update/delete 需要保存 `googleCalendarEventId` 後才能穩定對應。
-- query 是否查 Firestore 或 Google Calendar 需另外設計。
-- 第一版 Google Calendar sync 僅處理 create。
-
-## Testing Strategy
-
-測試順序：
-
-```text
-1. UseCase tests
-   └─ REST 與 LINE 都共用同一條任務流程
-
-2. Service tests
-   └─ extraction required fields validation
-
-3. Repository tests
-   └─ Firestore document mapping
-
-4. Handler tests
-   └─ request parse / response envelope / error mapping
-```
-
-第一版至少要覆蓋：
-- REST request 成功呼叫 usecase。
-- Internal 回 summary / startAt / endAt 時會寫 Firestore。
-- Internal 缺 startAt / endAt 時不寫 Firestore 並回錯。
-- location 缺失仍可成功新增。
-
-## Development Checklist
-
-每次新增功能前確認：
-
-1. 是否仍和 LinkChat 無關。
-2. 是否仍由 Internal 負責 AI parsing。
-3. Handler 是否只做 transport mapping。
-4. REST 與 LINE 是否共用同一個 UseCase。
-5. startAt / endAt 缺失是否被視為錯誤。
-6. location 是否維持 optional。
-7. Google Calendar sync 是否保持 Firestore source of truth。
-8. 是否需要同步 PLAN.md。
+當設計先行、code 尚未落地時：
+- BDD / SDD / TDD / PLAN / DEVELOPMENT 可以先反映目標設計
+- `CODE_REVIEW.md` 必須保持 code-first，不得把未落地設計寫成現況

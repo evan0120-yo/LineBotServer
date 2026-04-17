@@ -7,16 +7,17 @@ type LineWebhookRequest struct {
 
 // LineEvent represents a single event in LINE webhook.
 type LineEvent struct {
-	Type    string      `json:"type"`
-	Message LineMessage `json:"message"`
-	Source  LineSource  `json:"source"`
+	Type       string      `json:"type"`
+	ReplyToken string      `json:"replyToken"`
+	Message    LineMessage `json:"message"`
+	Source     LineSource  `json:"source"`
 }
 
 // LineMessage represents a message in LINE event.
 type LineMessage struct {
-	Type    string        `json:"type"`
-	Text    string        `json:"text"`
-	Mention *LineMention  `json:"mention,omitempty"`
+	Type    string       `json:"type"`
+	Text    string       `json:"text"`
+	Mention *LineMention `json:"mention,omitempty"`
 }
 
 // LineMention represents mention information in LINE message.
@@ -33,7 +34,7 @@ type LineMentionee struct {
 
 // LineSource represents the source of LINE event.
 type LineSource struct {
-	Type    string `json:"type"`    // "user", "group", "room"
+	Type    string `json:"type"` // "user", "group", "room"
 	UserID  string `json:"userId"`
 	GroupID string `json:"groupId,omitempty"`
 	RoomID  string `json:"roomId,omitempty"`

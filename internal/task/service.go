@@ -17,16 +17,15 @@ func (s *Service) ValidateTaskType(taskType string) error {
 			return nil
 		}
 	}
-
 	return infra.NewTaskTypeUnsupportedError(taskType)
 }
 
-// ValidateOperation validates if the operation is supported in the first version.
-// First version only supports "create" operation.
+// ValidateOperation validates if the operation is supported.
 func (s *Service) ValidateOperation(operation string) error {
-	if operation != "create" {
+	switch operation {
+	case "create", "query", "delete", "update":
+		return nil
+	default:
 		return infra.NewOperationUnsupportedError(operation)
 	}
-
-	return nil
 }

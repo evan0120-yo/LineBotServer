@@ -2,140 +2,214 @@
 
 ## Purpose
 
-這份文件列出目前已實作的測試，反映實際測試狀態。
+這份文件定義新的 Calendar-only 架構要怎麼測、測到哪裡、為什麼這樣測。
 
 ```text
 test scope
-├─ 已補測試：核心邏輯鎖住（Google Calendar sync + error handling + LINE webhook boundary）
-└─ 未補測試：其餘簡單邏輯透過手動驗證
+├─ operation factory
+├─ Calendar integration behavior
+├─ LINE webhook boundary
+└─ reply formatting
 ```
 
 ## Test Strategy
 
-第一版測試重點放在最容易出錯的邏輯：
+這一輪重點不再是 Firestore，而是：
 
 ```text
-test priority
-├─ calendar usecase
-│  └─ Google Calendar sync 三種狀態（enabled/disabled/failed）
-│     └─ 確保 sync failure 不會導致 Firestore task 消失
-│
-├─ infra http
-│  └─ error handling 細節（missingFields / JSON strict decode）
-│
-└─ gatekeeper LINE webhook
-   └─ request-level ack / signature / mention cleanup / source mapping
+priority
+├─ task operation dispatch
+├─ calendar create/query/delete/update
+├─ query overlap rule
+├─ LINE webhook mention flow
+└─ LINE reply formatting
 ```
 
-## Implemented Tests
+## Unit Tests
 
-### calendar usecase
+### task operation validation
+
+應覆蓋：
 
 ```text
-calendar.UseCase tests
-├─ create with sync disabled
-│  └─ provider 不應被呼叫
-│  └─ calendarSyncStatus = not_enabled
-│
-├─ create with sync enabled
-│  └─ provider 應被呼叫
-│  └─ sync result 應寫回 Firestore
-│  └─ calendarSyncStatus = calendar_synced
-│
-├─ sync failure without dropping task
-│  └─ Firestore task 應保留
-│  └─ calendarSyncStatus = calendar_sync_failed
-│  └─ calendarSyncError 應保存
-│
-└─ required time missing
-   └─ startAt/endAt 缺失應拒絕
-   └─ repository 不應被呼叫
+task.Service / task.UseCase
+├─ taskType=calendar accepted
+├─ unsupported taskType rejected
+├─ operation=create accepted
+├─ operation=query accepted
+├─ operation=delete accepted
+├─ operation=update accepted
+└─ unknown operation rejected
 ```
 
-**Test files**: `internal/calendar/usecase_test.go`
+### query overlap rule
 
-**Test functions**:
-- `TestUseCaseCreateWhenGoogleCalendarDisabled`
-- `TestUseCaseCreateSyncsGoogleCalendar`
-- `TestUseCaseCreateMarksSyncFailedWithoutDroppingTask`
-- `TestUseCaseCreateReturnsErrorWhenRequiredTimeMissing`
-
-### infra http
+應覆蓋：
 
 ```text
-infra.HTTP tests
-├─ DecodeJSONStrict rejects trailing JSON
-│  └─ 確保只接受單一 JSON object
-│
-├─ NewInternalExtractionIncompleteError keeps missingFields
-│  └─ BusinessError 應保留 missingFields
-│
-└─ WriteError includes missingFields
-   └─ HTTP response error 應包含 missingFields
+overlap
+├─ event fully contains query range
+├─ query fully contains event
+├─ overlap at left boundary
+├─ overlap at right boundary
+├─ exact same range
+└─ no overlap
 ```
 
-**Test files**: `internal/infra/http_test.go`
-
-**Test functions**:
-- `TestDecodeJSONStrictRejectsTrailingJSONObject`
-- `TestNewInternalExtractionIncompleteErrorKeepsMissingFields`
-- `TestWriteErrorIncludesMissingFields`
-
-### gatekeeper LINE webhook
+代表案例：
 
 ```text
-gatekeeper.LineHandler tests
-├─ invalid signature
-│  └─ should return 401 and skip task usecase
-├─ mention cleanup
-│  └─ should remove mention text and pass source="line"
-├─ no bot mention
-│  └─ should ignore event without calling task usecase
-└─ mixed event outcomes
-   └─ should still ack 200 and continue later events
+event: 12:00 ~ 15:00
+query: 12:00 ~ 12:30 -> match
+query: 14:30 ~ 15:30 -> match
+query: 11:30 ~ 12:00 -> match
+query: 15:01 ~ 16:00 -> no match
 ```
 
-**Test files**: `internal/gatekeeper/line_handler_test.go`
+### reply formatting
 
-**Test functions**:
-- `TestLineHandlerServeHTTPRejectsInvalidSignature`
-- `TestLineHandlerServeHTTPCleansMentionAndUsesLineSource`
-- `TestLineHandlerServeHTTPIgnoresMessageWithoutBotMention`
-- `TestLineHandlerServeHTTPAcknowledgesWebhookWhenSomeEventsFail`
-
-## Not Tested (Manual Verification)
-
-以下邏輯透過手動驗證，未寫自動化測試：
+應覆蓋：
 
 ```text
-not tested
-├─ gatekeeper (REST API)
-│  └─ text validation / request mapping
-│     └─ 簡單 if 判斷，手動測試即可
-│
-├─ task
-│  └─ taskType / operation validation / dispatch
-│     └─ switch case 邏輯，手動測試即可
-│
-└─ repository
-   └─ Firestore mapping
-      └─ 需要 emulator，成本效益不高
+formatter
+├─ single event -> 3 lines
+├─ multiple events -> blank line separator
+├─ no data -> "沒資料"
+├─ error -> concise message
+└─ eventId has no prefix
 ```
 
-## Test Coverage Summary
+## Integration Tests
+
+### calendar create
+
+應覆蓋：
 
 ```text
-coverage
-├─ calendar usecase: 4 tests (Google Calendar sync 邏輯)
-├─ infra http: 3 tests (error handling 細節)
-├─ gatekeeper line webhook: 4 tests (signature / mention / ack 邏輯)
-└─ others: manual verification
+create integration
+├─ valid create command -> events.insert called
+├─ returned eventId propagated to result
+├─ location empty still succeeds
+└─ missing summary/startAt/endAt rejected
 ```
 
-第一版測試策略：**鎖住最容易出錯的邏輯（Google Calendar sync + webhook boundary），其他透過手動驗證**。
+### calendar query
 
----
+應覆蓋：
 
-**文件版本**：v2.0
-**最後更新**：2026-04-16
-**測試覆蓋**：核心邏輯鎖住，簡單邏輯手動驗證
+```text
+query integration
+├─ query uses time range only
+├─ Google Calendar returns candidate events
+├─ overlap filter keeps matching events
+└─ result maps eventId / summary / startAt / endAt
+```
+
+### calendar delete
+
+應覆蓋：
+
+```text
+delete integration
+├─ eventId present -> events.delete called
+├─ eventId missing -> reject
+└─ provider error -> concise delete failure
+```
+
+### calendar update
+
+應覆蓋：
+
+```text
+update integration
+├─ eventId + summary -> events.patch called
+├─ title updated only
+├─ eventId missing -> reject
+└─ provider error -> concise update failure
+```
+
+## LINE Webhook Tests
+
+應覆蓋：
+
+```text
+line webhook
+├─ invalid signature rejected
+├─ non-text event ignored
+├─ no mention ignored
+├─ mention cleaned correctly
+├─ accepted event enters shared task usecase
+└─ webhook still acks request-level 200
+```
+
+## Manual Verification
+
+這輪仍保留必要手動驗證，因為 LINE 與 Google Calendar 屬於真實外部整合。
+
+### Manual flow
+
+```text
+manual verification
+├─ Postman -> POST /api/tasks -> create
+├─ LINE group mention -> create
+├─ query by time range
+├─ copy returned eventId
+├─ delete by eventId
+└─ update by eventId + new title
+```
+
+### Manual checkpoints
+
+```text
+checkpoints
+├─ create reply shows real eventId
+├─ query can find overlapping event
+├─ query no result returns "沒資料"
+├─ delete removes target event
+├─ update changes title only
+└─ error reply stays concise
+```
+
+## Risk-Based Coverage
+
+最容易出錯的地方：
+
+```text
+risk hotspots
+├─ Internal operation dispatch
+├─ query overlap filter
+├─ eventId mapping
+├─ LINE mention cleanup
+└─ reply formatting contract
+```
+
+所以第一批自動化測試應先鎖：
+
+```text
+phase 1
+├─ task dispatch
+├─ overlap rule
+├─ formatter
+└─ webhook boundary
+```
+
+第二批再補：
+
+```text
+phase 2
+├─ Google Calendar create
+├─ Google Calendar query
+├─ Google Calendar delete
+└─ Google Calendar update
+```
+
+## Deprecated Coverage
+
+這次設計完成後，下列測試不再是目標主軸：
+
+```text
+deprecated
+├─ Firestore mapping
+├─ Firestore sync status
+└─ Firestore persistence recovery
+```

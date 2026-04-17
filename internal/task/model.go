@@ -8,7 +8,7 @@ const (
 	TaskTypeCalendar TaskType = "calendar"
 )
 
-// SupportedTaskTypes returns the list of supported task types for the first version.
+// SupportedTaskTypes returns the list of supported task types.
 func SupportedTaskTypes() []string {
 	return []string{string(TaskTypeCalendar)}
 }
@@ -22,18 +22,18 @@ type CreateFromTextCommand struct {
 	ClientIP      string
 }
 
-// TaskResult holds the result of task creation.
+// TaskEvent represents an event returned to REST or LINE reply formatting.
+type TaskEvent struct {
+	EventID  string
+	Summary  string
+	StartAt  string
+	EndAt    string
+	Location string
+}
+
+// TaskResult holds the result of a task operation.
 type TaskResult struct {
-	TaskID                 string
-	Operation              string
-	Summary                string
-	StartAt                string
-	EndAt                  string
-	Location               string
-	MissingFields          []string
-	CalendarSyncStatus     string
-	GoogleCalendarID       string
-	GoogleCalendarEventID  string
-	GoogleCalendarHTMLLink string
-	CalendarSyncError      string
+	Operation string
+	ReplyText string
+	Events    []TaskEvent
 }

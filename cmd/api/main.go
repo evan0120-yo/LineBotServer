@@ -37,7 +37,7 @@ func main() {
 	log.Printf("Internal App ID: %s", cfg.InternalAppID)
 	log.Printf("Internal Builder ID: %d", cfg.InternalBuilderID)
 	log.Printf("Google Calendar enabled: %t", cfg.GoogleCalendarEnabled)
-	log.Printf("LINE webhook enabled: %t", cfg.LineChannelSecret != "" && cfg.LineBotUserID != "")
+	log.Printf("LINE webhook enabled: %t", cfg.LineChannelSecret != "" && cfg.LineChannelAccessToken != "" && cfg.LineBotUserID != "")
 	if cfg.LineBotUserID != "" {
 		log.Printf("LINE Bot User ID: %s", cfg.LineBotUserID)
 	}

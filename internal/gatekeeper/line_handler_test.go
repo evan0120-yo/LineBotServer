@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"linebot-backend/internal/infra"
 	"linebot-backend/internal/task"
 )
 
@@ -38,9 +39,20 @@ func (f *fakeTaskCreator) CreateFromText(_ context.Context, command task.CreateF
 	return result, err
 }
 
+type fakeReplySender struct {
+	commands []infra.LineReplyCommand
+	err      error
+}
+
+func (f *fakeReplySender) ReplyText(_ context.Context, command infra.LineReplyCommand) error {
+	f.commands = append(f.commands, command)
+	return f.err
+}
+
 func TestLineHandlerServeHTTPRejectsInvalidSignature(t *testing.T) {
 	taskCreator := &fakeTaskCreator{}
-	handler := NewLineHandler(NewUseCase(taskCreator), "secret", "bot-user")
+	replySender := &fakeReplySender{}
+	handler := NewLineHandler(NewUseCase(taskCreator), replySender, "secret", "bot-user")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/line/webhook", strings.NewReader(validLineWebhookBody()))
 	req.Header.Set("x-line-signature", "invalid")
@@ -54,17 +66,21 @@ func TestLineHandlerServeHTTPRejectsInvalidSignature(t *testing.T) {
 	if len(taskCreator.commands) != 0 {
 		t.Fatalf("expected no task calls, got %d", len(taskCreator.commands))
 	}
+	if len(replySender.commands) != 0 {
+		t.Fatalf("expected no reply calls, got %d", len(replySender.commands))
+	}
 }
 
-func TestLineHandlerServeHTTPCleansMentionAndUsesLineSource(t *testing.T) {
+func TestLineHandlerServeHTTPCleansMentionAndReplies(t *testing.T) {
 	taskCreator := &fakeTaskCreator{
 		results: []task.TaskResult{
-			{TaskID: "task-1"},
+			{Operation: "create", ReplyText: "event-1\n小傑約明天吃午餐\n2026-04-16 12:00 (週四) ~ 2026-04-16 12:30 (週四)"},
 		},
 	}
-	handler := NewLineHandler(NewUseCase(taskCreator), "secret", "bot-user")
+	replySender := &fakeReplySender{}
+	handler := NewLineHandler(NewUseCase(taskCreator), replySender, "secret", "bot-user")
 
-	body := `{"events":[{"type":"message","message":{"type":"text","text":"@bot 小傑約明天吃午餐","mention":{"mentionees":[{"index":0,"length":5,"userId":"bot-user"}]}},"source":{"type":"group","groupId":"g1","userId":"u1"}}]}`
+	body := `{"events":[{"type":"message","replyToken":"reply-1","message":{"type":"text","text":"@bot 小傑約明天吃午餐","mention":{"mentionees":[{"index":0,"length":5,"userId":"bot-user"}]}},"source":{"type":"group","groupId":"g1","userId":"u1"}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/line/webhook", strings.NewReader(body))
 	req.Header.Set("x-line-signature", signLineBody("secret", body))
 	recorder := httptest.NewRecorder()
@@ -77,6 +93,9 @@ func TestLineHandlerServeHTTPCleansMentionAndUsesLineSource(t *testing.T) {
 	if len(taskCreator.commands) != 1 {
 		t.Fatalf("expected 1 task call, got %d", len(taskCreator.commands))
 	}
+	if len(replySender.commands) != 1 {
+		t.Fatalf("expected 1 reply call, got %d", len(replySender.commands))
+	}
 
 	command := taskCreator.commands[0]
 	if command.Source != "line" {
@@ -84,6 +103,9 @@ func TestLineHandlerServeHTTPCleansMentionAndUsesLineSource(t *testing.T) {
 	}
 	if command.Text != "小傑約明天吃午餐" {
 		t.Fatalf("expected cleaned text, got %q", command.Text)
+	}
+	if replySender.commands[0].ReplyToken != "reply-1" {
+		t.Fatalf("expected reply token reply-1, got %q", replySender.commands[0].ReplyToken)
 	}
 
 	var response struct {
@@ -105,9 +127,10 @@ func TestLineHandlerServeHTTPCleansMentionAndUsesLineSource(t *testing.T) {
 
 func TestLineHandlerServeHTTPIgnoresMessageWithoutBotMention(t *testing.T) {
 	taskCreator := &fakeTaskCreator{}
-	handler := NewLineHandler(NewUseCase(taskCreator), "secret", "bot-user")
+	replySender := &fakeReplySender{}
+	handler := NewLineHandler(NewUseCase(taskCreator), replySender, "secret", "bot-user")
 
-	body := `{"events":[{"type":"message","message":{"type":"text","text":"明天吃午餐"},"source":{"type":"user","userId":"u1"}}]}`
+	body := `{"events":[{"type":"message","replyToken":"reply-1","message":{"type":"text","text":"明天吃午餐"},"source":{"type":"user","userId":"u1"}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/line/webhook", strings.NewReader(body))
 	req.Header.Set("x-line-signature", signLineBody("secret", body))
 	recorder := httptest.NewRecorder()
@@ -120,6 +143,9 @@ func TestLineHandlerServeHTTPIgnoresMessageWithoutBotMention(t *testing.T) {
 	if len(taskCreator.commands) != 0 {
 		t.Fatalf("expected no task calls, got %d", len(taskCreator.commands))
 	}
+	if len(replySender.commands) != 0 {
+		t.Fatalf("expected no reply calls, got %d", len(replySender.commands))
+	}
 }
 
 func TestLineHandlerServeHTTPAcknowledgesWebhookWhenSomeEventsFail(t *testing.T) {
@@ -130,12 +156,13 @@ func TestLineHandlerServeHTTPAcknowledgesWebhookWhenSomeEventsFail(t *testing.T)
 		},
 		results: []task.TaskResult{
 			{},
-			{TaskID: "task-2"},
+			{Operation: "create", ReplyText: "event-2\n第二筆\n2026-04-16 12:00 (週四) ~ 2026-04-16 12:30 (週四)"},
 		},
 	}
-	handler := NewLineHandler(NewUseCase(taskCreator), "secret", "bot-user")
+	replySender := &fakeReplySender{}
+	handler := NewLineHandler(NewUseCase(taskCreator), replySender, "secret", "bot-user")
 
-	body := `{"events":[{"type":"message","message":{"type":"text","text":"@bot 第一筆","mention":{"mentionees":[{"index":0,"length":5,"userId":"bot-user"}]}},"source":{"type":"group","groupId":"g1","userId":"u1"}},{"type":"message","message":{"type":"text","text":"@bot 第二筆","mention":{"mentionees":[{"index":0,"length":5,"userId":"bot-user"}]}},"source":{"type":"group","groupId":"g1","userId":"u2"}}]}`
+	body := `{"events":[{"type":"message","replyToken":"reply-1","message":{"type":"text","text":"@bot 第一筆","mention":{"mentionees":[{"index":0,"length":5,"userId":"bot-user"}]}},"source":{"type":"group","groupId":"g1","userId":"u1"}},{"type":"message","replyToken":"reply-2","message":{"type":"text","text":"@bot 第二筆","mention":{"mentionees":[{"index":0,"length":5,"userId":"bot-user"}]}},"source":{"type":"group","groupId":"g1","userId":"u2"}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/line/webhook", strings.NewReader(body))
 	req.Header.Set("x-line-signature", signLineBody("secret", body))
 	recorder := httptest.NewRecorder()
@@ -147,6 +174,9 @@ func TestLineHandlerServeHTTPAcknowledgesWebhookWhenSomeEventsFail(t *testing.T)
 	}
 	if len(taskCreator.commands) != 2 {
 		t.Fatalf("expected 2 task calls, got %d", len(taskCreator.commands))
+	}
+	if len(replySender.commands) != 2 {
+		t.Fatalf("expected 2 reply calls, got %d", len(replySender.commands))
 	}
 
 	var response struct {
@@ -170,7 +200,7 @@ func TestLineHandlerServeHTTPAcknowledgesWebhookWhenSomeEventsFail(t *testing.T)
 }
 
 func validLineWebhookBody() string {
-	return `{"events":[{"type":"message","message":{"type":"text","text":"@bot test","mention":{"mentionees":[{"index":0,"length":5,"userId":"bot-user"}]}},"source":{"type":"user","userId":"u1"}}]}`
+	return `{"events":[{"type":"message","replyToken":"reply-1","message":{"type":"text","text":"@bot test","mention":{"mentionees":[{"index":0,"length":5,"userId":"bot-user"}]}},"source":{"type":"user","userId":"u1"}}]}`
 }
 
 func signLineBody(secret, body string) string {

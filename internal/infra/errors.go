@@ -53,7 +53,6 @@ const (
 	ErrCodeTaskTypeUnsupported          = "TASK_TYPE_UNSUPPORTED"
 	ErrCodeOperationUnsupported         = "OPERATION_UNSUPPORTED"
 	ErrCodeInternalGRPCError            = "INTERNAL_GRPC_ERROR"
-	ErrCodeFirestoreWriteError          = "FIRESTORE_WRITE_ERROR"
 )
 
 // NewTextRequiredError creates TEXT_REQUIRED error.
@@ -75,7 +74,7 @@ func NewTaskTypeUnsupportedError(taskType string) error {
 
 // NewOperationUnsupportedError creates OPERATION_UNSUPPORTED error.
 func NewOperationUnsupportedError(operation string) error {
-	message := "Operation " + operation + " is not supported in the first version"
+	message := "Operation " + operation + " is not supported"
 	return NewError(ErrCodeOperationUnsupported, message, http.StatusBadRequest)
 }
 
@@ -84,7 +83,10 @@ func NewInternalGRPCError(err error) error {
 	return NewError(ErrCodeInternalGRPCError, "Internal gRPC call failed: "+err.Error(), http.StatusInternalServerError)
 }
 
-// NewFirestoreWriteError creates FIRESTORE_WRITE_ERROR error.
-func NewFirestoreWriteError(err error) error {
-	return NewError(ErrCodeFirestoreWriteError, "Firestore write failed: "+err.Error(), http.StatusInternalServerError)
+// ErrorReplyMessage returns a concise user-facing message for LINE or REST reply text.
+func ErrorReplyMessage(err error) string {
+	if bizErr := AsBusinessError(err); bizErr != nil {
+		return bizErr.Message
+	}
+	return "系統發生錯誤"
 }

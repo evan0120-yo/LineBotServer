@@ -15,29 +15,18 @@ import (
 // App represents the LineBot Backend application.
 type App struct {
 	handler        http.Handler
-	store          *infra.Store
 	internalClient *internalclient.Service
 }
 
 // New creates and wires up the LineBot Backend application.
 func New(cfg infra.Config) (*App, error) {
-	// 1. Create Firestore store
-	store, err := infra.NewStoreWithOptions(infra.StoreOptions{
-		ProjectID:    cfg.FirestoreProjectID,
-		EmulatorHost: cfg.FirestoreEmulatorHost,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Firestore store: %w", err)
-	}
-
-	// 2. Create Internal AI Copilot gRPC client
+	// 1. Create Internal AI Copilot gRPC client
 	internalClient, err := internalclient.NewService(cfg.InternalGRPCAddr)
 	if err != nil {
-		store.Close()
 		return nil, fmt.Errorf("failed to create Internal gRPC client: %w", err)
 	}
 
-	// 3. Create calendar module
+	// 2. Create calendar module
 	var googleCalendarProvider infra.GoogleCalendarProvider
 	if cfg.GoogleCalendarEnabled {
 		googleCalendarProvider, err = infra.NewGoogleCalendarClient(context.Background(), infra.GoogleCalendarClientOptions{
@@ -48,18 +37,20 @@ func New(cfg infra.Config) (*App, error) {
 		})
 		if err != nil {
 			internalClient.Close()
-			store.Close()
 			return nil, fmt.Errorf("failed to create Google Calendar client: %w", err)
 		}
 	}
 
+	var lineReplyClient infra.LineReplyProvider
+	if cfg.LineChannelAccessToken != "" {
+		lineReplyClient = infra.NewLineMessagingClient(cfg.LineChannelAccessToken)
+	}
+
 	calendarService := calendar.NewService()
-	calendarRepository := calendar.NewRepository(store)
 	calendarUseCase := calendar.NewUseCase(
 		calendarService,
-		calendarRepository,
 		googleCalendarProvider,
-		calendar.SyncConfig{
+		calendar.Config{
 			Enabled:    cfg.GoogleCalendarEnabled,
 			CalendarID: cfg.GoogleCalendarID,
 			TimeZone:   cfg.GoogleCalendarTimeZone,
@@ -70,24 +61,22 @@ func New(cfg infra.Config) (*App, error) {
 	taskService := task.NewService()
 	taskUseCase := task.NewUseCase(taskService, internalClient, calendarUseCase, cfg)
 
-	// 5. Create gatekeeper module
+	// 4. Create gatekeeper module
 	gatekeeperUseCase := gatekeeper.NewUseCase(taskUseCase)
 	gatekeeperHandler := gatekeeper.NewHandler(gatekeeperUseCase)
 
-	// 6. Create LINE webhook handler (only if configured)
-	// 7. Create HTTP router
+	// 5. Create HTTP router
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/tasks", gatekeeperHandler.CreateTask)
 
-	// Only register LINE webhook if channel secret and bot user ID are configured
-	if cfg.LineChannelSecret != "" && cfg.LineBotUserID != "" {
-		lineHandler := gatekeeper.NewLineHandler(gatekeeperUseCase, cfg.LineChannelSecret, cfg.LineBotUserID)
+	// Only register LINE webhook if channel secret, access token, and bot user ID are configured.
+	if cfg.LineChannelSecret != "" && cfg.LineChannelAccessToken != "" && cfg.LineBotUserID != "" {
+		lineHandler := gatekeeper.NewLineHandler(gatekeeperUseCase, lineReplyClient, cfg.LineChannelSecret, cfg.LineBotUserID)
 		mux.HandleFunc("POST /api/line/webhook", lineHandler.ServeHTTP)
 	}
 
 	return &App{
 		handler:        mux,
-		store:          store,
 		internalClient: internalClient,
 	}, nil
 }
@@ -103,10 +92,6 @@ func (a *App) Close() error {
 
 	if err := a.internalClient.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close internal client: %w", err))
-	}
-
-	if err := a.store.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("close store: %w", err))
 	}
 
 	if len(errs) > 0 {

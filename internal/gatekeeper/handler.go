@@ -56,19 +56,20 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Map to response
+	events := make([]CreateTaskResponseEvent, 0, len(result.Events))
+	for _, event := range result.Events {
+		events = append(events, CreateTaskResponseEvent{
+			EventID:  event.EventID,
+			Summary:  event.Summary,
+			StartAt:  event.StartAt,
+			EndAt:    event.EndAt,
+			Location: event.Location,
+		})
+	}
 	responseData := CreateTaskResponseData{
-		TaskID:                 result.TaskID,
-		Operation:              result.Operation,
-		Summary:                result.Summary,
-		StartAt:                result.StartAt,
-		EndAt:                  result.EndAt,
-		Location:               result.Location,
-		MissingFields:          result.MissingFields,
-		CalendarSyncStatus:     result.CalendarSyncStatus,
-		GoogleCalendarID:       result.GoogleCalendarID,
-		GoogleCalendarEventID:  result.GoogleCalendarEventID,
-		GoogleCalendarHTMLLink: result.GoogleCalendarHTMLLink,
-		CalendarSyncError:      result.CalendarSyncError,
+		Operation: result.Operation,
+		ReplyText: result.ReplyText,
+		Events:    events,
 	}
 
 	// 7. Write JSON response

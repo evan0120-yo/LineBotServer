@@ -9,16 +9,16 @@ type CreateTaskRequest struct {
 
 // CreateTaskResponseData represents the JSON response data for POST /api/tasks.
 type CreateTaskResponseData struct {
-	TaskID                 string   `json:"taskId"`
-	Operation              string   `json:"operation"`
-	Summary                string   `json:"summary"`
-	StartAt                string   `json:"startAt"`
-	EndAt                  string   `json:"endAt"`
-	Location               string   `json:"location"`
-	MissingFields          []string `json:"missingFields"`
-	CalendarSyncStatus     string   `json:"calendarSyncStatus"`
-	GoogleCalendarID       string   `json:"googleCalendarId"`
-	GoogleCalendarEventID  string   `json:"googleCalendarEventId"`
-	GoogleCalendarHTMLLink string   `json:"googleCalendarHtmlLink"`
-	CalendarSyncError      string   `json:"calendarSyncError"`
+	Operation string                    `json:"operation"`
+	ReplyText string                    `json:"replyText"`
+	Events    []CreateTaskResponseEvent `json:"events"`
+}
+
+// CreateTaskResponseEvent represents one calendar event in REST response.
+type CreateTaskResponseEvent struct {
+	EventID  string `json:"eventId"`
+	Summary  string `json:"summary"`
+	StartAt  string `json:"startAt"`
+	EndAt    string `json:"endAt"`
+	Location string `json:"location"`
 }

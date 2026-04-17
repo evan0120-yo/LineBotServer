@@ -2,7 +2,6 @@ package task
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 
 	"linebot-backend/internal/calendar"
@@ -33,12 +32,10 @@ func NewUseCase(
 	}
 }
 
-// CreateFromText creates a task from natural language text.
-// Calls Internal AI Copilot for extraction, validates the result, and dispatches to the appropriate feature module.
+// CreateFromText extracts a task from natural language text and dispatches by operation.
 func (u *UseCase) CreateFromText(ctx context.Context, command CreateFromTextCommand) (TaskResult, error) {
 	log.Printf("[INFO] task create start: source=%s text=%q referenceTime=%q timeZone=%q clientIP=%q", command.Source, command.Text, command.ReferenceTime, command.TimeZone, command.ClientIP)
 
-	// 1. Build Internal LineTaskConsult command
 	internalCommand := internalclient.LineTaskConsultCommand{
 		AppID:              u.config.InternalAppID,
 		BuilderID:          u.config.InternalBuilderID,
@@ -49,92 +46,150 @@ func (u *UseCase) CreateFromText(ctx context.Context, command CreateFromTextComm
 		ClientIP:           command.ClientIP,
 	}
 
-	// 2. Call Internal AI Copilot
 	log.Printf("[INFO] task calling internal grpc: appID=%s builderID=%d supportedTaskTypes=%v", internalCommand.AppID, internalCommand.BuilderID, internalCommand.SupportedTaskTypes)
 	extractionResult, err := u.internalClient.LineTaskConsult(ctx, internalCommand)
 	if err != nil {
 		log.Printf("[INFO] task internal grpc failed: err=%v", err)
 		return TaskResult{}, err
 	}
-	log.Printf("[INFO] task internal grpc success: taskType=%s operation=%s summary=%q startAt=%q endAt=%q missingFields=%v", extractionResult.TaskType, extractionResult.Operation, extractionResult.Summary, extractionResult.StartAt, extractionResult.EndAt, extractionResult.MissingFields)
+	log.Printf("[INFO] task internal grpc success: taskType=%s operation=%s eventID=%q summary=%q startAt=%q endAt=%q queryStartAt=%q queryEndAt=%q missingFields=%v", extractionResult.TaskType, extractionResult.Operation, extractionResult.EventID, extractionResult.Summary, extractionResult.StartAt, extractionResult.EndAt, extractionResult.QueryStartAt, extractionResult.QueryEndAt, extractionResult.MissingFields)
 
-	// 3. Validate taskType
 	if err := u.service.ValidateTaskType(extractionResult.TaskType); err != nil {
 		log.Printf("[INFO] task validate taskType failed: taskType=%s err=%v", extractionResult.TaskType, err)
 		return TaskResult{}, err
 	}
-
-	// 4. Validate operation
 	if err := u.service.ValidateOperation(extractionResult.Operation); err != nil {
 		log.Printf("[INFO] task validate operation failed: operation=%s err=%v", extractionResult.Operation, err)
 		return TaskResult{}, err
 	}
-	log.Printf("[INFO] task dispatching: taskType=%s operation=%s", extractionResult.TaskType, extractionResult.Operation)
 
-	// 5. Dispatch by taskType
+	log.Printf("[INFO] task dispatching: taskType=%s operation=%s", extractionResult.TaskType, extractionResult.Operation)
 	switch TaskType(extractionResult.TaskType) {
 	case TaskTypeCalendar:
-		return u.createCalendarTask(ctx, command, internalCommand, extractionResult)
+		return u.executeCalendarOperation(ctx, extractionResult)
 	default:
-		// Should not happen due to ValidateTaskType, but handle defensively
 		return TaskResult{}, infra.NewTaskTypeUnsupportedError(extractionResult.TaskType)
 	}
 }
 
-func (u *UseCase) createCalendarTask(
-	ctx context.Context,
-	command CreateFromTextCommand,
-	internalCommand internalclient.LineTaskConsultCommand,
-	extractionResult internalclient.LineTaskConsultResult,
-) (TaskResult, error) {
-	log.Printf("[INFO] task calendar create: summary=%q startAt=%q endAt=%q location=%q", extractionResult.Summary, extractionResult.StartAt, extractionResult.EndAt, extractionResult.Location)
-
-	// Build calendar.CreateCommand
-	calendarCommand := calendar.CreateCommand{
-		Source:            command.Source,
-		RawText:           command.Text,
-		TaskType:          extractionResult.TaskType,
-		Operation:         extractionResult.Operation,
-		Summary:           extractionResult.Summary,
-		StartAt:           extractionResult.StartAt,
-		EndAt:             extractionResult.EndAt,
-		Location:          extractionResult.Location,
-		MissingFields:     extractionResult.MissingFields,
-		InternalAppID:     u.config.InternalAppID,
-		InternalBuilderID: u.config.InternalBuilderID,
-		InternalRequest:   serializeToJSON(internalCommand),
-		InternalResponse:  serializeToJSON(extractionResult),
+func (u *UseCase) executeCalendarOperation(ctx context.Context, extractionResult internalclient.LineTaskConsultResult) (TaskResult, error) {
+	switch extractionResult.Operation {
+	case "create":
+		return u.createCalendarEvent(ctx, extractionResult)
+	case "query":
+		return u.queryCalendarEvents(ctx, extractionResult)
+	case "delete":
+		return u.deleteCalendarEvent(ctx, extractionResult)
+	case "update":
+		return u.updateCalendarEvent(ctx, extractionResult)
+	default:
+		return TaskResult{}, infra.NewOperationUnsupportedError(extractionResult.Operation)
 	}
+}
 
-	// Call calendar usecase
-	calendarTask, err := u.calendarUseCase.Create(ctx, calendarCommand)
+func (u *UseCase) createCalendarEvent(ctx context.Context, extractionResult internalclient.LineTaskConsultResult) (TaskResult, error) {
+	event, err := u.calendarUseCase.Create(ctx, calendar.CreateCommand{
+		Summary:  extractionResult.Summary,
+		StartAt:  extractionResult.StartAt,
+		EndAt:    extractionResult.EndAt,
+		Location: extractionResult.Location,
+	})
 	if err != nil {
 		log.Printf("[INFO] task calendar create failed: err=%v", err)
 		return TaskResult{}, err
 	}
-	log.Printf("[INFO] task calendar create success: taskID=%s syncStatus=%s googleEventID=%s", calendarTask.TaskID, calendarTask.CalendarSyncStatus, calendarTask.GoogleCalendarEventID)
 
-	// Map to TaskResult
-	result := TaskResult{
-		TaskID:                 calendarTask.TaskID,
-		Operation:              extractionResult.Operation,
-		Summary:                calendarTask.Summary,
-		StartAt:                calendarTask.StartAt,
-		EndAt:                  calendarTask.EndAt,
-		Location:               calendarTask.Location,
-		MissingFields:          calendarTask.MissingFields,
-		CalendarSyncStatus:     calendarTask.CalendarSyncStatus,
-		GoogleCalendarID:       calendarTask.GoogleCalendarID,
-		GoogleCalendarEventID:  calendarTask.GoogleCalendarEventID,
-		GoogleCalendarHTMLLink: calendarTask.GoogleCalendarHTMLLink,
-		CalendarSyncError:      calendarTask.CalendarSyncError,
+	replyText, err := calendar.NewService().FormatEventsReply([]calendar.Event{event}, u.config.GoogleCalendarTimeZone)
+	if err != nil {
+		log.Printf("[INFO] task calendar create format failed: err=%v", err)
+		return TaskResult{}, infra.NewError("CALENDAR_REPLY_FORMAT_FAILED", "格式化行事曆回覆失敗", 500)
 	}
-	log.Printf("[INFO] task create completed: taskID=%s operation=%s", result.TaskID, result.Operation)
 
+	result := TaskResult{
+		Operation: "create",
+		ReplyText: replyText,
+		Events:    mapEvents([]calendar.Event{event}),
+	}
+	log.Printf("[INFO] task create completed: operation=%s eventID=%s", result.Operation, event.EventID)
 	return result, nil
 }
 
-func serializeToJSON(v any) string {
-	data, _ := json.Marshal(v)
-	return string(data)
+func (u *UseCase) queryCalendarEvents(ctx context.Context, extractionResult internalclient.LineTaskConsultResult) (TaskResult, error) {
+	events, err := u.calendarUseCase.Query(ctx, calendar.QueryCommand{
+		QueryStartAt: extractionResult.QueryStartAt,
+		QueryEndAt:   extractionResult.QueryEndAt,
+	})
+	if err != nil {
+		log.Printf("[INFO] task calendar query failed: err=%v", err)
+		return TaskResult{}, err
+	}
+
+	replyText, err := calendar.NewService().FormatEventsReply(events, u.config.GoogleCalendarTimeZone)
+	if err != nil {
+		log.Printf("[INFO] task calendar query format failed: err=%v", err)
+		return TaskResult{}, infra.NewError("CALENDAR_REPLY_FORMAT_FAILED", "格式化行事曆回覆失敗", 500)
+	}
+
+	result := TaskResult{
+		Operation: "query",
+		ReplyText: replyText,
+		Events:    mapEvents(events),
+	}
+	log.Printf("[INFO] task query completed: operation=%s eventCount=%d", result.Operation, len(result.Events))
+	return result, nil
+}
+
+func (u *UseCase) deleteCalendarEvent(ctx context.Context, extractionResult internalclient.LineTaskConsultResult) (TaskResult, error) {
+	if err := u.calendarUseCase.Delete(ctx, calendar.DeleteCommand{
+		EventID: extractionResult.EventID,
+	}); err != nil {
+		log.Printf("[INFO] task calendar delete failed: err=%v", err)
+		return TaskResult{}, err
+	}
+
+	result := TaskResult{
+		Operation: "delete",
+		ReplyText: calendar.NewService().FormatDeleteSuccessReply(),
+	}
+	log.Printf("[INFO] task delete completed: operation=%s eventID=%s", result.Operation, extractionResult.EventID)
+	return result, nil
+}
+
+func (u *UseCase) updateCalendarEvent(ctx context.Context, extractionResult internalclient.LineTaskConsultResult) (TaskResult, error) {
+	event, err := u.calendarUseCase.Update(ctx, calendar.UpdateCommand{
+		EventID: extractionResult.EventID,
+		Summary: extractionResult.Summary,
+	})
+	if err != nil {
+		log.Printf("[INFO] task calendar update failed: err=%v", err)
+		return TaskResult{}, err
+	}
+
+	replyText, err := calendar.NewService().FormatEventsReply([]calendar.Event{event}, u.config.GoogleCalendarTimeZone)
+	if err != nil {
+		log.Printf("[INFO] task calendar update format failed: err=%v", err)
+		return TaskResult{}, infra.NewError("CALENDAR_REPLY_FORMAT_FAILED", "格式化行事曆回覆失敗", 500)
+	}
+
+	result := TaskResult{
+		Operation: "update",
+		ReplyText: replyText,
+		Events:    mapEvents([]calendar.Event{event}),
+	}
+	log.Printf("[INFO] task update completed: operation=%s eventID=%s", result.Operation, event.EventID)
+	return result, nil
+}
+
+func mapEvents(events []calendar.Event) []TaskEvent {
+	mapped := make([]TaskEvent, 0, len(events))
+	for _, event := range events {
+		mapped = append(mapped, TaskEvent{
+			EventID:  event.EventID,
+			Summary:  event.Summary,
+			StartAt:  event.StartAt,
+			EndAt:    event.EndAt,
+			Location: event.Location,
+		})
+	}
+	return mapped
 }

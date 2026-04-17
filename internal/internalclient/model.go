@@ -15,9 +15,12 @@ type LineTaskConsultCommand struct {
 type LineTaskConsultResult struct {
 	TaskType      string
 	Operation     string
+	EventID       string
 	Summary       string
 	StartAt       string
 	EndAt         string
+	QueryStartAt  string
+	QueryEndAt    string
 	Location      string
 	MissingFields []string
 }
