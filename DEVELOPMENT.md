@@ -298,6 +298,48 @@ update
 └─ summary
 ```
 
+## Logging Direction
+
+大量 log 能讓 AI 在下次 debug / 討論時直接讀 log，而不需要重新追 code 或反覆問 context，大幅省 token。
+
+原則：**寫越多 INFO log 越好**，上線前再統一拔掉或降級。
+
+```text
+log 的時機
+├─ 任何 branch decision 點
+│  ├─ operation 走哪條
+│  ├─ mention 有沒有命中
+│  ├─ 驗證通過 / 失敗原因
+│  └─ fallback 觸發
+├─ 每次呼叫外部系統前後
+│  ├─ Internal gRPC call (request + response summary)
+│  ├─ Google Calendar API call
+│  └─ LINE reply 送出
+├─ 每個 usecase 入口
+│  ├─ 收到的 text
+│  ├─ 解出的 operation
+│  └─ 最終回覆內容
+└─ 任何 error / unexpected state
+   ├─ 欄位缺失詳細列出是哪個
+   ├─ external API error 完整 message
+   └─ unexpected taskType / operation 值是什麼
+```
+
+格式建議：
+
+```text
+log key-value 結構
+├─ 用 slog 或 log.Printf 帶 key=value 方便 grep
+├─ 每條 log 起碼含：[module] + [action] + [key values]
+└─ 範例：
+   [task] operation=create summary="小傑約明天吃晚餐" startAt=...
+   [calendar] create ok eventId=xxxx
+   [line] mention found cleanedText="..."
+   [gatekeeper] validation failed reason="missing summary"
+```
+
+> 注意：這些 log 是開發期工具，上線前確認移除或改為 DEBUG level。
+
 ## Testing Direction
 
 先補：
