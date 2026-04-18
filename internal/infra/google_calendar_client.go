@@ -198,6 +198,9 @@ func (c *GoogleCalendarClient) UpdateEventSummary(
 	event := &calendarapi.Event{
 		Summary: command.Summary,
 	}
+	if strings.TrimSpace(command.Location) != "" {
+		event.Location = command.Location
+	}
 
 	updated, err := c.service.Events.Patch(calendarID, command.EventID, event).Context(ctx).Do()
 	if err != nil {

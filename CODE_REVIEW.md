@@ -129,9 +129,9 @@ calendar module
 
 ```text
 create
-├─ validate summary/startAt/endAt
+├─ validate summary/startAt/endAt (location optional, silently written if provided)
 ├─ call Google Calendar events.insert
-└─ format 3-line reply
+└─ format 3-line reply (location not shown in reply)
 ```
 
 ### query
@@ -168,6 +168,7 @@ delete
 update
 ├─ require eventId
 ├─ require summary
+├─ location optional (non-empty → patched, empty → existing location unchanged)
 └─ call Google Calendar events.patch
 ```
 
@@ -194,13 +195,13 @@ Internal 回來的結果，現在除了原本的：
 ```text
 Internal response
 ├─ create
-│  └─ 用 summary/startAt/endAt 建立 Google event
+│  └─ 用 summary/startAt/endAt 建立 Google event，location 若非空一併寫入
 ├─ query
 │  └─ 用 queryStartAt/queryEndAt 查 Google Calendar
 ├─ delete
 │  └─ 用 eventId 刪 Google event
 └─ update
-   └─ 用 eventId + summary 改標題
+   └─ 用 eventId + summary 改標題，location 非空時一併 patch
 ```
 
 > 注意：create 的最終 `eventId` 不是 Internal 生的，而是 Google Calendar create 成功後真正回來的 event id。

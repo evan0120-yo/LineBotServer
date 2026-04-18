@@ -90,6 +90,7 @@ create integration
 ├─ valid create command -> events.insert called
 ├─ returned eventId propagated to result
 ├─ location empty still succeeds
+├─ location provided → written to Google Calendar event
 └─ missing summary/startAt/endAt rejected
 ```
 

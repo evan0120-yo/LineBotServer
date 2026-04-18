@@ -157,8 +157,9 @@ func (u *UseCase) deleteCalendarEvent(ctx context.Context, extractionResult inte
 
 func (u *UseCase) updateCalendarEvent(ctx context.Context, extractionResult internalclient.LineTaskConsultResult) (TaskResult, error) {
 	event, err := u.calendarUseCase.Update(ctx, calendar.UpdateCommand{
-		EventID: extractionResult.EventID,
-		Summary: extractionResult.Summary,
+		EventID:  extractionResult.EventID,
+		Summary:  extractionResult.Summary,
+		Location: extractionResult.Location,
 	})
 	if err != nil {
 		log.Printf("[INFO] task calendar update failed: err=%v", err)

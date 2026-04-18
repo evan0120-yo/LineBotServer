@@ -138,6 +138,7 @@ func (u *UseCase) Update(ctx context.Context, command UpdateCommand) (Event, err
 		EventID:    command.EventID,
 		Summary:    command.Summary,
 		TimeZone:   u.config.TimeZone,
+		Location:   command.Location,
 	})
 	if err != nil {
 		log.Printf("[INFO] calendar update provider failed: err=%v", err)

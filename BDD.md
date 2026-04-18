@@ -51,7 +51,8 @@ delete contract
 └─ must not search by title or time range
 
 update contract
-├─ direct by eventId + new summary only
+├─ direct by eventId + new summary
+├─ location optional (non-empty → overwrite, empty → leave existing unchanged)
 └─ must not change original startAt / endAt
 
 webhook contract

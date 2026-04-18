@@ -21,8 +21,9 @@ type DeleteCommand struct {
 
 // UpdateCommand holds parameters for updating a calendar event.
 type UpdateCommand struct {
-	EventID string
-	Summary string
+	EventID  string
+	Summary  string
+	Location string
 }
 
 // Event represents a calendar event in LineBot Backend.

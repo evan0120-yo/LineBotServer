@@ -102,7 +102,8 @@ input
 input
 ├─ calendarId
 ├─ eventId
-└─ summary (title only)
+├─ summary
+└─ location (optional, non-empty → patch, empty → leave unchanged)
 ```
 
 ## Reply Formatting Contract

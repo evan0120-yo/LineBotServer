@@ -34,6 +34,7 @@ type GoogleCalendarUpdateEventCommand struct {
 	EventID    string
 	Summary    string
 	TimeZone   string
+	Location   string
 }
 
 // GoogleCalendarEventResult holds Google Calendar event metadata.
