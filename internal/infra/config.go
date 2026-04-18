@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Addr                       string
 	InternalGRPCAddr           string
+	InternalGRPCInsecure       bool
 	InternalAppID              string
 	InternalBuilderID          int
 	GoogleCalendarEnabled      bool
@@ -27,8 +28,9 @@ type Config struct {
 // LoadConfigFromEnv loads configuration from environment variables.
 func LoadConfigFromEnv() Config {
 	return Config{
-		Addr:                       getEnvWithDefault("LINEBOT_ADDR", ":8083"),
+		Addr:                       getEnvWithDefault("LINEBOT_ADDR", portAddr(":8083")),
 		InternalGRPCAddr:           getEnvWithDefault("LINEBOT_INTERNAL_GRPC_ADDR", "localhost:9091"),
+		InternalGRPCInsecure:       getEnvBool("LINEBOT_INTERNAL_GRPC_INSECURE", true),
 		InternalAppID:              getEnvWithDefault("LINEBOT_INTERNAL_APP_ID", "linebot-app"),
 		InternalBuilderID:          getEnvInt("LINEBOT_INTERNAL_BUILDER_ID", 4),
 		GoogleCalendarEnabled:      getEnvBool("LINEBOT_GOOGLE_CALENDAR_ENABLED", false),
@@ -42,6 +44,14 @@ func LoadConfigFromEnv() Config {
 		LineChannelAccessToken:     os.Getenv("LINEBOT_LINE_CHANNEL_ACCESS_TOKEN"),
 		LineBotUserID:              os.Getenv("LINEBOT_LINE_BOT_USER_ID"),
 	}
+}
+
+// portAddr returns ":PORT" from Cloud Run's PORT env var, or the given fallback.
+func portAddr(fallback string) string {
+	if port := os.Getenv("PORT"); port != "" {
+		return ":" + port
+	}
+	return fallback
 }
 
 func getEnvWithDefault(key, defaultValue string) string {

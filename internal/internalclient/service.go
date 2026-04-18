@@ -2,11 +2,16 @@ package internalclient
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
+	"strings"
 
+	"google.golang.org/api/idtoken"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	grpcoauth "google.golang.org/grpc/credentials/oauth"
 
 	"linebot-backend/internal/infra"
 	grpcpb "linebot-backend/internal/internalclient/pb"
@@ -19,20 +24,33 @@ type Service struct {
 }
 
 // NewService creates a new Internal AI Copilot gRPC client.
-func NewService(grpcAddr string) (*Service, error) {
-	conn, err := grpc.NewClient(
-		grpcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+// When insecureConn is true, plain TCP is used (local dev).
+// When false, TLS + OIDC token are used (Cloud Run service-to-service).
+func NewService(grpcAddr string, insecureConn bool) (*Service, error) {
+	var opts []grpc.DialOption
+	if insecureConn {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
+		// Cloud Run service-to-service: attach OIDC token so the target service
+		// can verify the caller's identity via Cloud Run IAM (roles/run.invoker).
+		host := strings.SplitN(grpcAddr, ":", 2)[0]
+		audience := "https://" + host
+		ts, err := idtoken.NewTokenSource(context.Background(), audience)
+		if err != nil {
+			return nil, fmt.Errorf("idtoken.NewTokenSource: %w", err)
+		}
+		opts = append(opts, grpc.WithPerRPCCredentials(grpcoauth.TokenSource{TokenSource: ts}))
+	}
+
+	conn, err := grpc.NewClient(grpcAddr, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("grpc.NewClient: %w", err)
 	}
 
-	client := grpcpb.NewIntegrationServiceClient(conn)
-
 	return &Service{
 		conn:   conn,
-		client: client,
+		client: grpcpb.NewIntegrationServiceClient(conn),
 	}, nil
 }
 

@@ -21,7 +21,7 @@ type App struct {
 // New creates and wires up the LineBot Backend application.
 func New(cfg infra.Config) (*App, error) {
 	// 1. Create Internal AI Copilot gRPC client
-	internalClient, err := internalclient.NewService(cfg.InternalGRPCAddr)
+	internalClient, err := internalclient.NewService(cfg.InternalGRPCAddr, cfg.InternalGRPCInsecure)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Internal gRPC client: %w", err)
 	}
@@ -67,6 +67,9 @@ func New(cfg infra.Config) (*App, error) {
 
 	// 5. Create HTTP router
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("POST /api/tasks", gatekeeperHandler.CreateTask)
 
 	// Only register LINE webhook if channel secret, access token, and bot user ID are configured.
